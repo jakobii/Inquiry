@@ -1,0 +1,5 @@
+
+# anything with the the word secure in it.
+*.secure.*
+
+.vscode
