@@ -248,16 +248,31 @@ class TableConnection {
             throw "Query Results missing Primary key Column '$pk'. [RowConnection] must know the primary values to make gets and sets."
         }
     }
-    [RowConnection] Get([hashtable]$PrimaryKeyDefinition) {
-        $this.ThrowMissingPrimaryKey($PrimaryKeyDefinition.Keys)
-        return [RowConnection]::new($this, $PrimaryKeyDefinition)
+    # creates RowConnections for all the rows in a table.
+    [RowConnection[]] Get() {
+        $sql = $this.SqlSelect($this.PrimaryKeys.keys)
+        $results = $this.DB.Query($sql)
+        [system.collections.arraylist]$rows = @()
+        foreach($result in $results ){
+            $rows.add([RowConnection]::new($this,$result))
+        }
+        return $rows
     }
+    # this is takes a ubiquidious array and uses the other overload mothods to do the heavy lifting.
     [RowConnection[]] Get([array]$PrimaryKeyDefinitions) {
         [system.collections.arraylist]$rows = @()
         foreach ($pkd in $PrimaryKeyDefinitions) {
             $rows.Add($this.Get($pkd))
         }
         return $rows
+    }
+    [RowConnection] Get([hashtable]$PrimaryKeyDefinition) {
+        $this.ThrowMissingPrimaryKey($PrimaryKeyDefinition.Keys)
+        return [RowConnection]::new($this, $PrimaryKeyDefinition)
+    }
+    [RowConnection] Get([System.Data.DataRow]$DataRow) {
+        $this.ThrowMissingPrimaryKey($DataRow.Table.Columns.ColumnName)
+        return [RowConnection]::new($this, $DataRow)
     }
     [RowConnection[]] Get([scriptblock]$Filter) {
         $sql = $this.SqlSelectAll()
@@ -288,6 +303,9 @@ class TableConnection {
             $rows.Add($rowConn)
         }
         return $rows
+    }
+    Add ([System.Data.DataRow]$Row) {
+        $this.Add($Row.PrimaryKeys)
     }
     Add ([hashtable]$NewRow) {
         $this.ThrowMissingPrimaryKey($NewRow.Keys)
