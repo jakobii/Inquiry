@@ -155,7 +155,7 @@ class TableConnection {
     hidden [string] SqlSelect([string[]]$Columns) {
         return "SELECT `r`n`t[$($Columns -join "],`r`n`t[")] `r`nFROM $($this.sqlTableObjectName())" 
     }
-    hidden [string] SqlSelectAll([string[]]$Columns) {
+    hidden [string] SqlSelectAll() {
         return "SELECT *`r`nFROM $($this.sqlTableObjectName())" 
     }
     hidden [string] SqlUpdate([hashtable]$Columns) {
@@ -236,19 +236,28 @@ class TableConnection {
         }
         return $Cols
     }
-    hidden [string] MissingPrimaryKey([string[]]$Keys) {
+    hidden [string] MissingPrimaryKey([string[]]$Columns) {
         foreach ($pk in $this.PrimaryKeys) {
-            if ($Keys -notcontains $pk) {
+            if ($Columns -notcontains $pk) {
                 return $pk
             }
         }
         return $null
     }
-    hidden ThrowMissingPrimaryKey([string[]]$Keys) {
-        $pk = $this.MissingPrimaryKey($Keys)
+    hidden ThrowMissingPrimaryKey([string[]]$Columns) {
+        $pk = $this.MissingPrimaryKey($Columns)
         if ($pk) {
             throw "Query Results missing Primary key Column '$pk'. [RowConnection] must know the primary values to make gets and sets."
         }
+    }
+    hidden [string[]] IncludePrimaryKeys([string[]]$Columns){
+        [system.collections.ArrayList]$NewColumns = $Columns
+        foreach($PrimaryKey in $this.PrimaryKeys){
+            if($NewColumns -notcontains $PrimaryKey){
+                $NewColumns.add($PrimaryKey)
+            }
+        }
+        return $NewColumns
     }
     # creates RowConnections for all the rows in a table.
     [RowConnection[]] Get() {
@@ -278,6 +287,15 @@ class TableConnection {
     }
     [RowConnection[]] Get([scriptblock]$Filter) {
         $sql = $this.SqlSelectAll()
+        [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Filter
+        [system.collections.arraylist]$rows = @()
+        foreach ($result in $results ) {
+            $rows.add([RowConnection]::new($this, $result))
+        }
+        return $rows
+    }
+    [RowConnection[]] Get([scriptblock]$Filter,[array]$Column) {
+        $sql = $this.SqlSelect($this.IncludePrimaryKeys($Column))
         [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Filter
         [system.collections.arraylist]$rows = @()
         foreach ($result in $results ) {
@@ -362,7 +380,7 @@ class RowConnection {
     RowConnection([TableConnection]$table, [hashtable]$pks) {
         $this.Table = $table
         $this.PrimaryKeys = $pks
-        $this.NewColumnProperies($this.Table.Columns.ColumnName)
+        $this.NewColumnProperties($this.Table.Columns.ColumnName)
     }
     RowConnection([TableConnection]$table, [System.Data.DataRow]$row) {
         $this.Table = $table
@@ -370,7 +388,7 @@ class RowConnection {
         foreach ($col in $table.PrimaryKeys) {
             $this.PrimaryKeys.Add($col, $row."$col")
         }
-        $this.NewColumnProperies($this.Table.Columns.ColumnName)
+        $this.NewColumnProperties($this.Table.Columns.ColumnName)
     }
     hidden NewColumnProperties([string[]]$Columns) {
         foreach ($Column in $Columns) {
@@ -381,7 +399,7 @@ class RowConnection {
                 #get
                 Value       = Invoke-Expression "{return `$this.Get('$Column')}"
                 #set
-                SecondValue = Invoke-Expression "{ Param([psobject]`$Value) `$this.Set('$Column', `$Value)}"
+                SecondValue = Invoke-Expression "{ Param([parameter(mandatory)][psobject]`$Value) `$this.Set('$Column', `$Value)}"
             }
             Add-Member @NewMethod
         }
