@@ -1,5 +1,7 @@
 
 # anything with the the word secure in it.
 *.secure.*
+*secure.*
 
+# IDE stuff
 .vscode

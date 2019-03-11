@@ -9,6 +9,9 @@ Connecting to a database is pretty standard.
 ```powershell
 #Create A DatabaseConnection
 [DatabaseConnection]$Database = New-DatabaseConnection -ServerInstance 'MySrv' -DatabaseName 'MyDb' -Username 'User' -Password 'pass' 
+
+# Outputs all SQL to the console.
+$Database.DebugQuery = $true
 ```
 
 ## 2) Connect to a Table
@@ -18,7 +21,7 @@ Table( Schema, Table, PrimaryKey(s) )
 ```
 
 ## 3) Connect to a Row
-A `RowConenction` does not store the columns data inside it, it merely **references** a single row. when the RowConenction is created, getters and setters for each column are created and they look like properties. 
+A `RowConenction` does not store the columns data inside it, it merely **references** a single row.
 
 ```powershell
 [RowConnection]$Row = $Table.Get(@{ID = 123456})
@@ -28,12 +31,10 @@ We can get many row connections
 
 [RowConnection[]]$Rows = $Table.Get({$_.Firstname -like 'Jaco*'})
 ```
-
+when a `RowConenction` is created, getters and setters are created for each column and they feel just like hashtables. 
 
 ### Getter
-`RowConnection`'s have a property for each column. when we use the column property without an assignment variable we are requesting data from the database.
-
-A SELECT statement is generated and executed and the data id dilivered back to the caller.
+when we use a column property without an assignment operator we are requesting data from the database. A *SELECT* statement is generated and executed and the data is dilivered back to the caller.
 ```powershell
 $Row.Firstname | Out-Host   
 #     |     +--->
@@ -57,7 +58,7 @@ Or just get all the columns
 ```
 
 ### Setter
-When the `RowConnection` column properties are used with an assignment operator then an update statment is generated and no value is return to the caller.
+When the `RowConnection` column properties are used with an assignment operator then an *UPDATE* statment is generated and executed.
 ```powershell
 $Row.Firstname = 'Jimmy'
 #     |       <---
