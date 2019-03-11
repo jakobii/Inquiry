@@ -250,10 +250,10 @@ class TableConnection {
             throw "Query Results missing Primary key Column '$pk'. [RowConnection] must know the primary values to make gets and sets."
         }
     }
-    hidden [string[]] IncludePrimaryKeys([string[]]$Columns){
+    hidden [string[]] IncludePrimaryKeys([string[]]$Columns) {
         [system.collections.ArrayList]$NewColumns = $Columns
-        foreach($PrimaryKey in $this.PrimaryKeys){
-            if($NewColumns -notcontains $PrimaryKey){
+        foreach ($PrimaryKey in $this.PrimaryKeys) {
+            if ($NewColumns -notcontains $PrimaryKey) {
                 $NewColumns.add($PrimaryKey)
             }
         }
@@ -294,7 +294,7 @@ class TableConnection {
         }
         return $rows
     }
-    [RowConnection[]] Get([scriptblock]$Filter,[array]$Column) {
+    [RowConnection[]] Get([scriptblock]$Filter, [array]$Column) {
         $sql = $this.SqlSelect($this.IncludePrimaryKeys($Column))
         [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Filter
         [system.collections.arraylist]$rows = @()
@@ -392,17 +392,47 @@ class RowConnection {
     }
     hidden NewColumnProperties([string[]]$Columns) {
         foreach ($Column in $Columns) {
-            $NewMethod = @{
-                memberType  = 'ScriptProperty'
-                InputObject = $this
-                Name        = $Column
-                #get
-                Value       = Invoke-Expression "{return `$this.Get('$Column')}"
-                #set
-                SecondValue = Invoke-Expression "{ Param([parameter(mandatory)][psobject]`$Value) `$this.Set('$Column', `$Value)}"
+            if ($this.PrimaryKeys.Keys -contains $Column) {
+                $this.NewPrimaryKeyProperty($Column)
             }
-            Add-Member @NewMethod
+            else {
+                $NewMethod = @{
+                    memberType  = 'ScriptProperty'
+                    InputObject = $this
+                    Name        = $Column
+                    #get
+                    Value       = Invoke-Expression "{return `$this.Get('$Column')}"
+                    #set
+                    SecondValue = Invoke-Expression "{Param([parameter(mandatory)][psobject]`$Value) `$this.Set('$Column', `$Value)}"
+                }
+                Add-Member @NewMethod
+            }
         }
+    }
+    hidden NewPrimaryKeyProperty([string]$Column) {
+        $NewMethod = @{
+            memberType  = 'ScriptProperty'
+            InputObject = $this
+            Name        = $Column
+            #get
+            Value       = Invoke-Expression "{return `$this.Get('$Column')}"
+            #set
+            SecondValue = Invoke-Expression "{
+                Param(
+                    [parameter(mandatory)]
+                    [psobject]
+                    `$Value
+                )
+                try{
+                   `$this.Set('$Column', `$Value)
+                   `$this.PrimaryKeys['$Column'] = `$Value
+                }
+                catch{
+                    throw `$psitem
+                }
+            }"
+        }
+        Add-Member @NewMethod
     }
     Set([string]$Column, [psobject]$Value) {
         $t = @{$Column = $Value}
