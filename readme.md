@@ -21,20 +21,21 @@ Table( Schema, Table, PrimaryKey(s) )
 ```
 
 ## 3) Connect to a Row
-A `RowConenction` does not store the columns data inside it, it merely **references** a single row.
+A `RowConenction` does not store the entire rows data, it merely **references** the row using its primary key.
 
 ```powershell
 [RowConnection]$Row = $Table.Get(@{ID = 123456})
 ```
-We can get many row connections
-```powershell
 
+We can create many row connections at once.
+
+```powershell
 [RowConnection[]]$Rows = $Table.Get({$_.Firstname -like 'Jaco*'})
 ```
-when a `RowConenction` is created, getters and setters are created for each column and they feel just like hashtables. 
+when a `RowConenction` is created, getters and setters are created for each column, they look like properties on an object. 
 
 ### Getter
-when we use a column property without an assignment operator we are requesting data from the database. A *SELECT* statement is generated and executed and the data is dilivered back to the caller.
+when we use a column property without an assignment operator we are requesting data from the database. A *SELECT* statement is generated and executed and the value is delivered back to the caller.
 ```powershell
 $Row.Firstname | Out-Host   
 #     |     +--->
@@ -48,11 +49,11 @@ $Row.Firstname | Out-Host
 #           [_____]
 ```
 
-We can also get a list of columns
+We can also get a list of columns. Their values are mapped to the column names in a hashtable.
 ```powershell
 [hashtable]$Values = $Row.get(@('Firstname','Lastname'))
 ```
-Or just get all the columns
+Getting the entire row as a hashtable.
 ```powershell
 [hashtable]$Values = $Row.get()
 ```
