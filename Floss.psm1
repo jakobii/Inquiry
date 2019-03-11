@@ -37,7 +37,7 @@ function New-DatabaseConnection {
         [string]$Username,
         [string]$Password
     )
-    return [DatabaseConnection]::new($ServerInstance,$DatabaseName,$Username,$Password)
+    return [DatabaseConnection]::new($ServerInstance, $DatabaseName, $Username, $Password)
 }
 
 class DatabaseConnection {
@@ -86,10 +86,10 @@ class DatabaseConnection {
     # ConvertDataRowToHashtable
     # although we can detirmine the columns from the datarow, it requires 
     # generating a new array, which is slow. 
-    hidden [hashtable] ConvertDataRowToHashtable ([system.data.datarow]$row,[array]$Columns) {
+    hidden [hashtable] ConvertDataRowToHashtable ([system.data.datarow]$row, [array]$Columns) {
         $ht = @{}
-        foreach($Col in $Columns){
-            $ht.Add($Col,$row."$Col")
+        foreach ($Col in $Columns) {
+            $ht.Add($Col, $row."$Col")
         }
         return $ht
     }
@@ -97,16 +97,16 @@ class DatabaseConnection {
     hidden [hashtable] ConvertDataRowToHashtable ([system.data.datarow]$row) {
         $Columns = $row.Table.Columns.ColumnName
         $ht = @{}
-        foreach($Col in $Columns){
-            $ht.Add($Col,$row."$Col")
+        foreach ($Col in $Columns) {
+            $ht.Add($Col, $row."$Col")
         }
         return $ht
     }
     hidden [hashtable[]] ConvertDataRowsToHashtableArray ([array]$rows) {
         $Columns = $rows.Table.Columns.ColumnName
         [System.Collections.ArrayList]$hts = @()
-        foreach($row in $rows){
-            $hts.Add($this.ConvertDataRowToHashtable($row,$Columns))
+        foreach ($row in $rows) {
+            $hts.Add($this.ConvertDataRowToHashtable($row, $Columns))
         }
         return $hts
     }
@@ -115,6 +115,8 @@ class DatabaseConnection {
         return [TableConnection]::new($this, $Schema, $Name, $PrimaryKeys)
     }
 }
+
+
 class ColumnDefinition {
     [int]$ColumnID
     [string]$ColumnName
@@ -153,7 +155,7 @@ class TableConnection {
     hidden [string] SqlSelect([string[]]$Columns) {
         return "SELECT `r`n`t[$($Columns -join "],`r`n`t[")] `r`nFROM $($this.sqlTableObjectName())" 
     }
-    hidden [string] SqlSelectAll([string[]]$Columns) {
+    hidden [string] SqlSelectAll() {
         return "SELECT *`r`nFROM $($this.sqlTableObjectName())" 
     }
     hidden [string] SqlUpdate([hashtable]$Columns) {
@@ -234,24 +236,40 @@ class TableConnection {
         }
         return $Cols
     }
-    hidden [string] MissingPrimaryKey([string[]]$Keys) {
+    hidden [string] MissingPrimaryKey([string[]]$Columns) {
         foreach ($pk in $this.PrimaryKeys) {
-            if ($Keys -notcontains $pk) {
+            if ($Columns -notcontains $pk) {
                 return $pk
             }
         }
         return $null
     }
-    hidden ThrowMissingPrimaryKey([string[]]$Keys) {
-        $pk = $this.MissingPrimaryKey($Keys)
+    hidden ThrowMissingPrimaryKey([string[]]$Columns) {
+        $pk = $this.MissingPrimaryKey($Columns)
         if ($pk) {
             throw "Query Results missing Primary key Column '$pk'. [RowConnection] must know the primary values to make gets and sets."
         }
     }
-    [RowConnection] Get([hashtable]$PrimaryKeyDefinition) {
-        $this.ThrowMissingPrimaryKey($PrimaryKeyDefinition.Keys)
-        return [RowConnection]::new($this, $PrimaryKeyDefinition)
+    hidden [string[]] IncludePrimaryKeys([string[]]$Columns){
+        [system.collections.ArrayList]$NewColumns = $Columns
+        foreach($PrimaryKey in $this.PrimaryKeys){
+            if($NewColumns -notcontains $PrimaryKey){
+                $NewColumns.add($PrimaryKey)
+            }
+        }
+        return $NewColumns
     }
+    # creates RowConnections for all the rows in a table.
+    [RowConnection[]] Get() {
+        $sql = $this.SqlSelect($this.PrimaryKeys.keys)
+        $results = $this.DB.Query($sql)
+        [system.collections.arraylist]$rows = @()
+        foreach ($result in $results ) {
+            $rows.add([RowConnection]::new($this, $result))
+        }
+        return $rows
+    }
+    # this is takes a ubiquidious array and uses the other overload mothods to do the heavy lifting.
     [RowConnection[]] Get([array]$PrimaryKeyDefinitions) {
         [system.collections.arraylist]$rows = @()
         foreach ($pkd in $PrimaryKeyDefinitions) {
@@ -259,12 +277,29 @@ class TableConnection {
         }
         return $rows
     }
+    [RowConnection] Get([hashtable]$PrimaryKeyDefinition) {
+        $this.ThrowMissingPrimaryKey($PrimaryKeyDefinition.Keys)
+        return [RowConnection]::new($this, $PrimaryKeyDefinition)
+    }
+    [RowConnection] Get([System.Data.DataRow]$DataRow) {
+        $this.ThrowMissingPrimaryKey($DataRow.Table.Columns.ColumnName)
+        return [RowConnection]::new($this, $DataRow)
+    }
     [RowConnection[]] Get([scriptblock]$Filter) {
         $sql = $this.SqlSelectAll()
         [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Filter
         [system.collections.arraylist]$rows = @()
-        foreach($result in $results ){
-            $rows.add([RowConnection]::new($this,$result))
+        foreach ($result in $results ) {
+            $rows.add([RowConnection]::new($this, $result))
+        }
+        return $rows
+    }
+    [RowConnection[]] Get([scriptblock]$Filter,[array]$Column) {
+        $sql = $this.SqlSelect($this.IncludePrimaryKeys($Column))
+        [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Filter
+        [system.collections.arraylist]$rows = @()
+        foreach ($result in $results ) {
+            $rows.add([RowConnection]::new($this, $result))
         }
         return $rows
     }
@@ -288,6 +323,9 @@ class TableConnection {
             $rows.Add($rowConn)
         }
         return $rows
+    }
+    Add ([System.Data.DataRow]$Row) {
+        $this.Add($Row.PrimaryKeys)
     }
     Add ([hashtable]$NewRow) {
         $this.ThrowMissingPrimaryKey($NewRow.Keys)
@@ -342,12 +380,28 @@ class RowConnection {
     RowConnection([TableConnection]$table, [hashtable]$pks) {
         $this.Table = $table
         $this.PrimaryKeys = $pks
+        $this.NewColumnProperties($this.Table.Columns.ColumnName)
     }
     RowConnection([TableConnection]$table, [System.Data.DataRow]$row) {
         $this.Table = $table
         $this.PrimaryKeys = @{}
-        foreach($col in $table.PrimaryKeys){
+        foreach ($col in $table.PrimaryKeys) {
             $this.PrimaryKeys.Add($col, $row."$col")
+        }
+        $this.NewColumnProperties($this.Table.Columns.ColumnName)
+    }
+    hidden NewColumnProperties([string[]]$Columns) {
+        foreach ($Column in $Columns) {
+            $NewMethod = @{
+                memberType  = 'ScriptProperty'
+                InputObject = $this
+                Name        = $Column
+                #get
+                Value       = Invoke-Expression "{return `$this.Get('$Column')}"
+                #set
+                SecondValue = Invoke-Expression "{ Param([parameter(mandatory)][psobject]`$Value) `$this.Set('$Column', `$Value)}"
+            }
+            Add-Member @NewMethod
         }
     }
     Set([string]$Column, [psobject]$Value) {
@@ -377,7 +431,7 @@ class RowConnection {
         return $ht 
     }
     [hashtable] Get() {
-        $sql = $this.Table.SqlSelectAll()  + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
+        $sql = $this.Table.SqlSelectAll() + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $results = $this.Table.DB.Query($sql)
         return $this.Table.DB.ConvertDataRowToHashtable($results)
     }
