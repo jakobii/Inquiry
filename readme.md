@@ -2,12 +2,11 @@
 
 A Light weight Sql Server ORM written in Powershell. The goal of this module is to make working with sql server *feel* like powershell.
 
-- Tables should feel like [ArrayLists](https://docs.microsoft.com/en-us/dotnet/api/system.collections.arraylist) that are *easy* to filter, add to, and remove from.
-- Rows should feel like [Hashtables](https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_hash_tables) with properties that are *easy* to access and update.
+- Tables should feel like [ArrayLists](https://docs.microsoft.com/en-us/dotnet/api/system.collections.arraylist)
+- Rows should feel like [Hashtables](https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_hash_tables)
 
 ## Getting Started
 1) Connect to a Database
-Connecting to a database is pretty standard.
 
 ```powershell
 #Create A DatabaseConnection
@@ -32,10 +31,10 @@ $Database.DebugQuery = $true
 [RowConnection[]]$Rows = $Table.Get({$_.Firstname -like 'Jaco*'})
 ```
 ### `RowConenction`
-A `RowConenction` **references** a row using its primary key. Getters and Setters are generated for each column in the row, they look like properties on an object. 
+A `RowConenction` **references** a row in a table using its primary key. Getters and Setters are generated for each column in the row, they look like properties on an object. 
 
 #### Getters
-when we use a column property without an assignment operator we are requesting data from the database. A *SELECT* statement is generated and executed, then value is delivered back to the caller.
+using a column property without an assignment operator is a database request. A *SELECT* statement is generated and executed, then value is delivered back to the caller.
 
 ```powershell
 $Row.Firstname | Out-Host   
@@ -47,17 +46,20 @@ $Row.Firstname | Out-Host
 #    +----> [_____]
 ```
 
-We can also get a list of columns. The values are mapped to the column names in a hashtable.
+We can also request more than one column of data at once.
+
 ```powershell
+# List of columns
 [hashtable]$Values = $Row.get(@('Firstname','Lastname'))
-```
-Getting the entire row as a hashtable.
-```powershell
+
+# all columns
 [hashtable]$Values = $Row.get()
 ```
 
 #### Setters
-When the `RowConnection` column properties are used with an assignment operator, an *UPDATE* statment is generated and executed.
+
+When column properties are used with an assignment operator an *UPDATE* statment is generated and executed.
+
 ```powershell
 $Row.Firstname = 'Jacob'
 #    |       <---
@@ -68,7 +70,8 @@ $Row.Firstname = 'Jacob'
 #         [_____]
 
 ```
-We can also update a row with a hashtable.
+
+We can also update many columns at once.
 ```powershell
 $Row.Set(@{Firstname = 'Jacob'; Lastname = 'Ochoa'})
 ```
