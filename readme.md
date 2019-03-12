@@ -30,8 +30,9 @@ $Database.DebugQuery = $true
 # or 
 [RowConnection[]]$Rows = $Table.Get({$_.Firstname -like 'Jaco*'})
 ```
-### `RowConenction`
-A `RowConenction` **references** a row in a table using its primary key. Getters and Setters are generated for each column in the row, they look like properties on an object. 
+
+### `RowConnection`
+A `RowConenction` **references** a row in a table using its primary key. they have Getters and Setters foreach column in the row.
 
 #### Getters
 using a column property without an assignment operator is a database request. A *SELECT* statement is generated and executed, then value is delivered back to the caller.
@@ -46,7 +47,7 @@ $Row.Firstname | Out-Host
 #    +----> [_____]
 ```
 
-We can also request more than one column of data at once.
+We can also request multiple columns of data at once.
 
 ```powershell
 # List of columns
@@ -71,7 +72,7 @@ $Row.Firstname = 'Jacob'
 
 ```
 
-We can also update many columns at once.
+We can also update multiple columns at once.
 ```powershell
 $Row.Set(@{Firstname = 'Jacob'; Lastname = 'Ochoa'})
 ```

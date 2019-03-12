@@ -259,50 +259,6 @@ class TableConnection {
         }
         return $NewColumns
     }
-    # creates RowConnections for all the rows in a table.
-    [RowConnection[]] Get() {
-        $sql = $this.SqlSelect($this.PrimaryKeys.keys)
-        $results = $this.DB.Query($sql)
-        [system.collections.arraylist]$rows = @()
-        foreach ($result in $results ) {
-            $rows.add([RowConnection]::new($this, $result))
-        }
-        return $rows
-    }
-    # this is takes a ubiquidious array and uses the other overload mothods to do the heavy lifting.
-    [RowConnection[]] Get([array]$PrimaryKeyDefinitions) {
-        [system.collections.arraylist]$rows = @()
-        foreach ($pkd in $PrimaryKeyDefinitions) {
-            $rows.Add($this.Get($pkd))
-        }
-        return $rows
-    }
-    [RowConnection] Get([hashtable]$PrimaryKeyDefinition) {
-        $this.ThrowMissingPrimaryKey($PrimaryKeyDefinition.Keys)
-        return [RowConnection]::new($this, $PrimaryKeyDefinition)
-    }
-    [RowConnection] Get([System.Data.DataRow]$DataRow) {
-        $this.ThrowMissingPrimaryKey($DataRow.Table.Columns.ColumnName)
-        return [RowConnection]::new($this, $DataRow)
-    }
-    [RowConnection[]] Get([scriptblock]$Filter) {
-        $sql = $this.SqlSelectAll()
-        [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Filter
-        [system.collections.arraylist]$rows = @()
-        foreach ($result in $results ) {
-            $rows.add([RowConnection]::new($this, $result))
-        }
-        return $rows
-    }
-    [RowConnection[]] Get([scriptblock]$Filter, [array]$Column) {
-        $sql = $this.SqlSelect($this.IncludePrimaryKeys($Column))
-        [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Filter
-        [system.collections.arraylist]$rows = @()
-        foreach ($result in $results ) {
-            $rows.add([RowConnection]::new($this, $result))
-        }
-        return $rows
-    }
     # Query return an array of RowConnection's based on the results of sql.
     # the magor catch here is that the sql query must return the primary key columns
     [RowConnection[]] Query([string]$SQL) {
@@ -324,40 +280,84 @@ class TableConnection {
         }
         return $rows
     }
-    Add ([System.Data.DataRow]$Row) {
+    # creates RowConnections for all the rows in a table.
+    [RowConnection[]] Select() {
+        $sql = $this.SqlSelect($this.PrimaryKeys.keys)
+        $results = $this.DB.Query($sql)
+        [system.collections.arraylist]$rows = @()
+        foreach ($result in $results ) {
+            $rows.add([RowConnection]::new($this, $result))
+        }
+        return $rows
+    }
+    # this is takes a ubiquidious array and uses the other overload mothods to do the heavy lifting.
+    [RowConnection[]] Select([array]$PrimaryKeyDefinitions) {
+        [system.collections.arraylist]$rows = @()
+        foreach ($pkd in $PrimaryKeyDefinitions) {
+            $rows.Add($this.Select($pkd))
+        }
+        return $rows
+    }
+    [RowConnection] Select([hashtable]$PrimaryKeyDefinition) {
+        $this.ThrowMissingPrimaryKey($PrimaryKeyDefinition.Keys)
+        return [RowConnection]::new($this, $PrimaryKeyDefinition)
+    }
+    [RowConnection] Select([System.Data.DataRow]$DataRow) {
+        $this.ThrowMissingPrimaryKey($DataRow.Table.Columns.ColumnName)
+        return [RowConnection]::new($this, $DataRow)
+    }
+    [RowConnection[]] Select([scriptblock]$Where) {
+        $sql = $this.SqlSelectAll()
+        [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Where
+        [system.collections.arraylist]$rows = @()
+        foreach ($result in $results ) {
+            $rows.add([RowConnection]::new($this, $result))
+        }
+        return $rows
+    }
+    [RowConnection[]] Select([array]$Column,[scriptblock]$Where) {
+        $sql = $this.SqlSelect($this.IncludePrimaryKeys($Column))
+        [array]$results = $this.DB.Query($sql) | Where-Object -FilterScript $Where
+        [system.collections.arraylist]$rows = @()
+        foreach ($result in $results ) {
+            $rows.add([RowConnection]::new($this, $result))
+        }
+        return $rows
+    }
+    Insert ([System.Data.DataRow]$Row) {
         $this.Add($Row.PrimaryKeys)
     }
-    Add ([hashtable]$NewRow) {
+    Insert ([hashtable]$NewRow) {
         $this.ThrowMissingPrimaryKey($NewRow.Keys)
         $SQL = $this.SqlInsert($NewRow)
         $this.DB.Query($SQL)
     }
-    Add ([array]$NewRows) {
+    Insert ([array]$NewRows) {
         foreach ($NewRow in $NewRows) {
             $this.Add($NewRow)
         }
     }
-    Del([hashtable]$Row) {
+    Delete([hashtable]$Row) {
         $this.ThrowMissingPrimaryKey($Row.Keys)
         $sql = $this.SqlDelete() + $this.SqlWhere($Row) + ';'
         $this.DB.Query($sql)
     }
-    Del([RowConnection]$Row) {
+    Delete([RowConnection]$Row) {
         $this.Del($Row.PrimaryKeys)
     }
-    Del([array]$Rows) {
+    Delete([array]$Rows) {
         foreach ($Row in $Rows) {
             $this.Del($Row)
         }
     }
-    Set([hashtable]$Row) {
+    Update([hashtable]$Row) {
         $this.ThrowMissingPrimaryKey($Row)
         [string]$sql = $this.SqlUpdate($Row) + $this.SqlWhere() + ';'
-        $this.Table.DB.Query($sql)
+        $this.DB.Query($sql)
     }
-    Set([array]$Rows) {
+    Update([array]$Rows) {
         foreach ($Row in $Rows) {
-            $this.Set($Row)
+            $this.Update($Row)
         }
     }
 }
@@ -401,9 +401,9 @@ class RowConnection {
                     InputObject = $this
                     Name        = $Column
                     #get
-                    Value       = Invoke-Expression "{return `$this.Get('$Column')}"
+                    Value       = Invoke-Expression "{return `$this.Select('$Column')}"
                     #set
-                    SecondValue = Invoke-Expression "{Param([parameter(mandatory)][psobject]`$Value) `$this.Set('$Column', `$Value)}"
+                    SecondValue = Invoke-Expression "{Param([parameter(mandatory)][psobject]`$Value) `$this.Update('$Column', `$Value)}"
                 }
                 Add-Member @NewMethod
             }
@@ -415,7 +415,7 @@ class RowConnection {
             InputObject = $this
             Name        = $Column
             #get
-            Value       = Invoke-Expression "{return `$this.Get('$Column')}"
+            Value       = Invoke-Expression "{return `$this.Select('$Column')}"
             #set
             SecondValue = Invoke-Expression "{
                 Param(
@@ -424,7 +424,7 @@ class RowConnection {
                     `$Value
                 )
                 try{
-                   `$this.Set('$Column', `$Value)
+                   `$this.Update('$Column', `$Value)
                    `$this.PrimaryKeys['$Column'] = `$Value
                 }
                 catch{
@@ -434,22 +434,22 @@ class RowConnection {
         }
         Add-Member @NewMethod
     }
-    Set([string]$Column, [psobject]$Value) {
+    Update([string]$Column, [psobject]$Value) {
         $t = @{$Column = $Value}
         [string]$sql = $this.Table.SqlUpdate($t) + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $this.Table.DB.Query($sql)
     }
-    Set([hashtable]$Row) {
+    Update([hashtable]$Row) {
         [string]$sql = $this.Table.SqlUpdate($Row) + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $this.Table.DB.Query($sql)
     }
-    [psobject] Get([string]$Column) {
+    [psobject] Select([string]$Column) {
         [string]$sql = $this.Table.SqlSelect($Column) + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $Results = $this.Table.DB.Query($sql)
         if ($Results -isnot [system.data.datarow] -and $Results) {throw "Multiple Results Returned on Row.Get() Method! please check you Primary Key Constraints."}
         return $Results."$Column" | Convert-DBNull
     }
-    [hashtable] Get([array]$Columns) {
+    [hashtable] Select([array]$Columns) {
         [string]$sql = $this.Table.SqlSelect($Columns) + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $Results = $this.Table.DB.Query($sql)
         if ($Results -isnot [system.data.datarow] -and $Results) {throw "Multiple Results Returned on Row.Get() Method! please check you Primary Key Constraints."}
@@ -460,12 +460,12 @@ class RowConnection {
         }
         return $ht 
     }
-    [hashtable] Get() {
+    [hashtable] Select() {
         $sql = $this.Table.SqlSelectAll() + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $results = $this.Table.DB.Query($sql)
         return $this.Table.DB.ConvertDataRowToHashtable($results)
     }
-    Del() {
+    Delete() {
         $this.Table.Del($this)
     }
 }
