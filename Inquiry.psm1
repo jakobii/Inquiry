@@ -371,7 +371,7 @@ class TableConnection {
     }
     # creates RowConnections for all the rows in a table.
     [RowConnection[]] Select() {
-        $sql = $this.SqlSelect($this.PrimaryKeys.keys)
+        $sql = $this.SqlSelect($this.PrimaryKeys)
         $results = $this.DB.Cmd($sql)
         [system.collections.arraylist]$rows = @()
         foreach ($result in $results ) {
