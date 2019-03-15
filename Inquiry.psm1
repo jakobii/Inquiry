@@ -1,4 +1,3 @@
-#Requires -Modules SqlServer
 function Write-Console {
     param(
         [parameter(ValueFromPipeline)]
@@ -227,27 +226,6 @@ class DatabaseConnection {
 }
 
 
-
-
-<#
-
-#>
-class ColumnDefinition {
-    [int]$ColumnID
-    [string]$ColumnName
-    [string]$DataType
-    [int]$MaxLength
-    [int]$Percision
-}
-
-
-
-
-
-
-
-
-
 <#
     TableConnection stores information about a table and has methods for compiling sql cmds.
 #>
@@ -255,12 +233,14 @@ class TableConnection {
     [string]$TableName
     [string]$SchemaName
     [DatabaseConnection]$DB
-    [system.collections.arraylist]$Columns
+    
+    [hashtable[]]$Columns
     [string[]]$PrimaryKeys
+    
     TableConnection([DatabaseConnection]$DB, [string]$schema, [string]$table, [string[]]$PrimaryKeys) {
         $this.DB = $DB
         $this.TableName = $table
-        $this.SchemaName = $schema
+        $this.SchemaName = $schemaGetColumns
         $this.Columns = $this.GetColumns()
         $this.PrimaryKeys = $PrimaryKeys
     }
@@ -316,7 +296,8 @@ class TableConnection {
             $SqlCommand = [System.Data.SqlClient.SqlCommand]::New($Command, $SqlConnection)
             $SqlConnection.Open()
             $reader = $SqlCommand.ExecuteReader()
-            $this.Columns = $reader.GetSchemaTable()
+            $Table = $reader.GetSchemaTable()
+            $this.Columns 
         }
         catch {
             throw $PSItem

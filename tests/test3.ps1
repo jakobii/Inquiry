@@ -32,17 +32,17 @@ Function Split-SqlScript {
     [string]$Buffer = ''
     [array]$Commands = @()
     $reg = [regex]::New('^GO$')
-    foreach($line in $Content){
-        if($reg.Match($line).Success){
+    foreach ($line in $Content) {
+        if ($reg.Match($line).Success) {
             [array]$Commands += $Buffer
             [string]$Buffer = ''
         }
-        else{
+        else {
             [string]$Buffer += "`n"
             [string]$Buffer += $line
         }
     }
-    if($Buffer){
+    if ($Buffer) {
         [string]$Buffer += "`n"
         [array]$Commands += $Buffer
     }
@@ -65,17 +65,24 @@ function Invoke-Sql {
             $SqlCommand = [System.Data.SqlClient.SqlCommand]::New($Command, $Connection)
             $Connection.Open()
             $reader = $SqlCommand.ExecuteReader()
-            $Columns = $reader.GetSchemaTable()
+            $DataTable = $reader.GetSchemaTable()
+
+            if ($DataTable ) {
+                $DataTable | gm
+                ,$DataTable.Columns | Write-Console -f Yellow
+                ,$DataTable.Rows | Write-Console -f Magenta
+            }
             [System.Collections.ArrayList]$table = @()
             while ($reader.Read()) {
                 #$reader | Write-console -f Yellow
                 #$reader[1] | Write-Console -f Magenta
                 $Row = [ordered] @{}
-                foreach($Column in $Columns){
+                foreach ($Column in $DataTable) {
                     $Row.Add($Column.ColumnName, $reader[$Column.ColumnOrdinal])
                 }
                 $table.Add($Row) | Out-Null
             }
+            $reader.Close()
             $Connection.Close()
         }
         return $table
