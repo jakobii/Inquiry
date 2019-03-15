@@ -3,8 +3,8 @@
     1) functions are created when all object may need access to logic
     2) classes are created Spearingly to reduce end user learning curve
     2) classes can be created to manage other classes to make them more automagical
-    3) methods are created to operate on itself of to return data to the caller
-    4) methods are created when a class needs some custom logic
+    3) methods are created to operate on itself or to return data to the user
+    4) methods are created when a class needs some internal custom logic
     5) methods overloads created used to make interfaces more flexable to the user
     6) datatypes should always be explicity defined
 #>
@@ -170,7 +170,6 @@ Function Get-SqlTableSchema {
 }
 
 
-
 class DatabaseConnection {
     [SqlServerConnection]$Connection
     
@@ -223,9 +222,19 @@ class DatabaseConnection {
 class TableConnection {
     [string]$TableName
     [string]$SchemaName
+
+    # parent database connection
     [DatabaseConnection]$DB
+
+    # the tables column schema as defined
+    # by DataTableReader.GetSchemaTable()
     [hashtable[]]$Columns
-    [string[]]$PrimaryKeys
+
+    # the column names of the primary keys
+    # this property can be maually set or
+    # it can be set from details in the 
+    # table schema
+    [string[]]$PrimaryKeys 
     
     # Dynamically Get Primary Keys
     TableConnection([DatabaseConnection]$DB, [string]$schema, [string]$table) {
@@ -242,7 +251,7 @@ class TableConnection {
         $this.TableName = $table
         $this.SchemaName = $schema
         $this.SetColumnsFromTableSchema()
-        $this.PrimaryKeys = $PrimaryKeys
+        $this.SetPrimaryKeyManually($PrimaryKeys)
     }
 
     # query table for column information
@@ -254,17 +263,104 @@ class TableConnection {
     hidden SetPrimaryKeysFromColumns(){
         $this.PrimaryKeys = $this.Columns | Where-Object { $psitem.IsKey -eq $True } | Select-Object -ExpandProperty 'ColumnName'
     }
+
+    # Sets PrimeryKeys manually 
+    # PrimeryKeys must be valid columns
+    hidden SetPrimaryKeyManually([string[]]$PrimaryKeys){
+        foreach($PrimaryKey in $PrimaryKeys){
+            $ColumnNames = $this.Columns.ColumnName
+            if($ColumnNames -notcontains $PrimaryKey){
+                throw "Invalid ColumnName for PrimaryKey: '$PrimaryKey'"
+            }
+            $this.PrimaryKeys += $PrimaryKey
+        }
+    }
 }
 
 
 
 
+class RowConnection {
+
+}
 
 
+# a device that filters rows quickly server side.
+class RowIterator : System.Collections.IEnumerator {
+    [TableConnection]$Table
+    [ScriptBlock]$Filter
+    [string[]]$Columns
+
+    [System.Data.SqlClient.SqlConnection]$Connection
+    [System.Data.SqlClient.SqlDataReader]$Reader
+    [System.Data.SqlClient.SqlCommand]$Command
+
+    $Get_Current
+    
+    RowIterator () {
+        ([System.Collections.IEnumerator]$this).Get_Current
+    }
+
+    BuildCurrentProperty(){
+        $NewMethod = @{
+            memberType  = 'ScriptProperty'
+            InputObject = $this
+            Name        = 'Current'
+            Value       = {
+                return $this.GetCurrentRowConnection()
+            }
+        }
+        Add-Member @NewMethod
+    }
 
 
+    hidden NewConnection(){
+        # close old connection
+        $this.Connection.Close()
+        # create a new connection
+        $ConnectionString = $this.Table.DB.Connection.ConnectionStringSecure()
+        $this.Connection = [System.Data.SqlClient.SqlConnection]::new($ConnectionString)
+        $this.Connection.Credential = $this.Table.DB.Connection.SqlCredential()
+    }
+
+    hidden NewReader(){
+        # close any prior running reader
+        $this.ready.close()
+        # make a new reader
+        $this.Reader = [System.Data.SqlClient.SqlDataReader]::new($this.Command, $this.Connection)
+    }
 
 
+    # IEnumerable Properties && Methods
+    # $Current property needs to be added at runtime becuase powershell does not support getters.
+    [RowConnection]$Current
+    [int]$Cursor = -1
+    [int]$Count
+
+    [bool] MoveNext() {
+        $this.Cursor++
+        $this.GetCurrentRowConnection()
+        if($this.Cursor -lt $this.Count){
+            return $true
+        }
+        return $false
+    }
+
+    [void] Reset() {
+        $this.position = -1;
+        $this.NewConnection()
+        $this.NewReader()
+    }
+
+    [RowConnection] GetCurrentRowConnection(){
+        $this.Reader.Read()
+        [hashtable]$RowPrimaryKeys = @{}
+        foreach($PrimaryKey in $this.table.PrimaryKeys){
+            $RowPrimaryKeys.Add($PrimaryKey, $this.Reader[$PrimaryKey])
+        }
+        return [RowConnection]::new($this.table,$RowPrimaryKeys)
+    }
+}
 
 
 
