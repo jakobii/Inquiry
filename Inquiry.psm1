@@ -504,15 +504,18 @@ class RowConnection {
         }
         Add-Member @NewMethod
     }
+
     Update([string]$Column, [psobject]$Value) {
         $t = @{$Column = $Value}
         [string]$sql = $this.Table.SqlUpdate($t) + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $this.Table.DB.Cmd($sql)
     }
+
     Update([hashtable]$Row) {
         [string]$sql = $this.Table.SqlUpdate($Row) + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $this.Table.DB.Cmd($sql)
     }
+    
     [psobject] Select([string]$Column) {
         [string]$sql = $this.Table.SqlSelect($Column) + $this.Table.SqlWhere($this.PrimaryKeys) + ';'
         $Results = $this.Table.DB.Cmd($sql)
