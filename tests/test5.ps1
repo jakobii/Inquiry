@@ -123,7 +123,92 @@ function ConvertTo-Hashtable {
     }
 }
 
+
 <#
+    ConvertTo-DataString Function converts different datatypes into a hashtable like syntax string.
+
+    [requires]
+    ConvertTo-Hashtable
+
+    [example1]
+    ConvertTo-DataString -InputObject @{
+        a = 1
+        b = "abc"
+        c = 1.45
+        n = $true
+        x = get-date
+    }
+
+    [example2]
+    $table = [System.Data.DataTable]::new()
+    $table.Columns.Add('a','double') | out-null
+    $table.Columns.Add('b','int') | out-null
+    $table.Columns.Add('c','string') | out-null
+    $row = $table.NewRow()
+    $row['a'] = 3.14
+    $row['b'] = 42
+    $row['c'] = 'abc'
+    ConvertTo-DataString $row
+
+#>
+function ConvertTo-DataString {
+    param (
+        [parameter(ValueFromPipeline, Mandatory)]
+        [psobject]$InputObject,
+        [string[]]$Include,
+        [string[]]$Exclude
+    )
+    [string]$OutputObject = '@{'
+
+
+    # creates a new hashtable with filtered keys,values
+    if ($InputObject -is [Hashtable]) {
+        $KeyCount = $InputObject.Keys.Count 
+        $Index = 0
+        foreach ($Key in $InputObject.Keys) {
+            $Value = $InputObject[$Key]
+            if ($Include -and $Include -NotContains $Key) {
+                continue
+            }
+            if ($Exclude -and $Exclude -Contains $Key) {
+                continue
+            }
+            $OutputObject += "$Key = "
+            # Type Switch
+            if ( $Value -eq $null -or $value -is [dbnull]) {
+                $OutputObject += "`$Null;"
+            }
+            elseif ( $Value -is [string] -or $Value -is [char]) {
+                $OutputObject += "'$Value'"
+            }
+            elseif ( $Value -is [int] -or $Value -is [double]) {
+                $OutputObject += "$Value"
+            }
+            elseif ( $Value -is [bool]) {
+                $OutputObject += "`$$Value"
+            }
+            elseif ( $Value -is [datetime]) {
+                $OutputObject += "'$( $Value.ToUniversalTime() )'"
+            }
+            else {
+                $OutputObject += "$Value"
+            }
+            if ($Index++ -lt $KeyCount - 1) {
+                $OutputObject += " ; "
+            }
+        }
+        $OutputObject += '}'
+        return $OutputObject
+    }
+
+    # convert all other types to hastable then perform recursive function.
+    if ($InputObject -is [System.Data.Datarow]) {
+        return ConvertTo-Hashtable $InputObject | ConvertTo-DataString
+    }
+}
+
+<#
+    [Description]
     Assert-Array returns bool if Reference conatins Source values. 
     if Match = $true then the array must match exactly
 
@@ -295,9 +380,8 @@ Function New-SqlCmd {
     elseif ($type -eq [SqlCmdType]::DELETE) {}
 }
 <#
-
+    ConvertTo-SqlCmd wraps a sql statment in a statndard SqlConnection object
 #>
-
 function ConvertTo-SqlCmd {
     param(
         [parameter(Mandatory, ValueFromPipeline)]
@@ -306,7 +390,7 @@ function ConvertTo-SqlCmd {
         [int]$CommandTimeout = 0
     )
     $Command = [System.Data.SqlClient.SqlCommand]::new($Sql)
-    if($Connection){
+    if ($Connection) {
         $Command.Connection = $Connection
     }
     $Command.CommandTimeout = $CommandTimeout
@@ -314,9 +398,56 @@ function ConvertTo-SqlCmd {
 }
 
 <#
+    ConvertTo-TableName function Generates A standard table object name 
+    for SQL Server.
+
+    [example]
+    ConvertTo-TableName -Database 'MYDB' -Schema 'HR' -Table 'Employees'
+#>
+function ConvertTo-TableName {
+    param(
+        [string]$Database,
+        [string]$Schema = 'dbo',
+        [parameter(Mandatory)][string]$Table
+    )
+    $Name = ''
+    if ($Database) {
+        $Name += "[$Database]."
+    }
+    $Name += "[$Schema]."
+    $Name += "[$Table]"
+    return $Name
+}
+
+<#
+
+    [example]
+    New-SqlComment -Comment 'Testing RowConnection Uniqueness'
+#>
+function New-SqlComment {
+    Param(
+        [parameter(ValueFromPipeline)]
+        [string]$Comment,
+        [guid]$GUID = $(New-Guid),
+        [datetime]$Timestamp = $(Get-Date)
+    )
+    [string]$SqlLog = "/*"
+    if ($Comment) {
+        [string]$SqlLog += "`r`n`tComment: $Comment"
+    }
+    [string]$SqlLog += "`r`n`tGUID: $GUID"
+    [string]$SqlLog += "`r`n`tTimestamp: $Timestamp"
+    [string]$SqlLog += "`r`n*/`r`n"
+
+    return $SqlLog
+}
+
+
+
+<#
+    [Description]
     Invoke-Sql is like the officail Invoke-SqlCmd cmdlet. 
     
-    [Description]
     - its intent is to remove the SqlServer powershell module dependancy.
     
     [TODO]
@@ -327,25 +458,178 @@ function Invoke-Sql {
     param (
         [System.Data.SqlClient.SqlCommand]$Command
     )
-    $Adapter = [System.Data.SqlClient.SqlDataAdapter]::new($Command)
+    $Adapter = [System.Data.SqlClient.SqlDataAdapter]::new($Command.CommandText,$Command.Connection)
     $Table = [System.Data.DataTable]::new()
     $Adapter.Fill($Table)
     return $Table.Rows 
 }
 
+<#
+    Get-SchemaTable function returns an array of DataRows that decribe the tables schema
 
-class DatabaseConnection {
-    $Connection
-    [string]$DatabaseName
-    [bool]$Debug
-    [System.Data.Datarow[]] Query([System.Data.SqlClient.SqlCommand]$Command) {
-        return Invoke-Sql @{
-            Connection = $this.Connection
-            Command    = $Command
+    [example]
+    $Auth = [SqlServerAuthentication]::new('mhu-dbwh-02','Enrollment')
+    $table = Get-SchemaTable -Schema 'dbo' -Table 'JotFormTransferRequests' -Connection $Auth.SqlConnection()
+    $table.Rows[0] | Out-Host    
+#>
+function Get-SchemaTable {
+    param(
+        [parameter(Mandatory)]
+        [System.Data.SqlClient.SqlConnection]$Connection,
+
+        [string]$Schema = 'dbo',
+
+        [parameter(Mandatory)]
+        [string]$Table
+    )
+    [string]$TableName = ConvertTo-TableName -Database $Connection.Database -Schema $Schema -Table $Table
+    [string]$Command = "/* Getting SchemaTable */"
+    [string]$Command += "SELECT TOP 1 *`r`nFROM $TableName"
+    $Adapter = [System.Data.SqlClient.SqlDataAdapter]::new($Command, $Connection)
+    $Adapter.MissingSchemaAction = [System.Data.MissingSchemaAction]::AddWithKey
+    $DataTable = [System.Data.DataTable]::New($Table) 
+    $Adapter.Fill($DataTable) | Out-Null
+    [System.Data.DataTable]$SchemaTable = $DataTable.CreateDataReader().GetSchemaTable()
+    return $SchemaTable.Rows
+}
+
+
+
+<#
+    SqlServerAuthentication Class helps to simplify microsofts stupid database Auth API's
+#>
+Class SqlServerAuthentication {
+    [string]$Server
+    [string]$Database
+    [string]$Username
+    [string]$Password
+    [bool]$WindowsAuthentication
+    
+    [ValidateRange(0, 2147483647)]
+    [long]$ConnectTimeout
+
+    SqlServerAuthentication([string]$Server, [string]$Database, [string]$Username, [string]$Password) {
+        $this.Server = $Server
+        $this.Database = $Database
+        $this.Username = $Username
+        $this.Password = $Password
+        $this.WindowsAuthentication = $false
+        $this.ConnectTimeout = 0
+    }
+    SqlServerAuthentication([string]$Server, [string]$Database) {
+        $this.Server = $Server
+        $this.Database = $Database
+        $this.WindowsAuthentication = $true
+        $this.ConnectTimeout = 0
+    }
+    SqlServerAuthentication([hashtable]$Splat) {
+        $this.Server = $Splat.Server
+        $this.Database = $Splat.Database
+
+        if ($Splat.Username -and $Splat.Password) {
+            $this.Username = $Splat.Username
+            $this.Password = $Splat.Password
         }
+        else {
+            $this.WindowsAuthentication = $true
+        }
+        if ($Splat.ConnectTimeout -is [long] -or $Splat.ConnectTimeout -is [int]) {
+            $this.ConnectTimeout = $Splat.ConnectTimeout
+        }
+        else {
+            $this.ConnectTimeout = 0
+        }
+    }
+    # https://docs.microsoft.com/en-us/dotnet/api/system.data.sqlclient.sqlconnection.connectionstring
+    # ConnectionString includes the username and password in plain text.
+    [string] ConnectionString () {
+        $b = $this.SqlConnectionStringBuilder()
+        if ($this.Username) {
+            $b['User ID'] = $this.Username
+        }
+        if ($this.Password) {
+            $b['Password'] = $this.Password
+        }
+        return $b.ConnectionString
+    }
+    # ConnectionStringSecure does not include the username and password. and assumes you will use some other authentication method.
+    [string] ConnectionStringSecure () {
+        $b = $this.SqlConnectionStringBuilder()
+        return $b.ConnectionString
+    }
+    # SqlConnectionStringBuilder returns a ready to user SqlConnectionStringBuilder of the propeties already added.
+    [System.Data.SqlClient.SqlConnectionStringBuilder] SqlConnectionStringBuilder() {
+        $b = [System.Data.SqlClient.SqlConnectionStringBuilder]::New()
+        if ($this.Server) {
+            $b["Server"] = $this.Server
+        }
+        if ($this.Database) {
+            $b["Database"] = $this.Database
+        }
+        if ($this.WindowsAuthentication) {
+            $b["Integrated Security"] = $true
+        }
+        if ($this.ConnectTimeout) {
+            $b["Connect Timeout"] = $this.ConnectTimeout
+        }
+        if ($this.Encrypt) {
+            $b['Encrypt'] = $true
+        }
+        return $b
+    }
+    # PSCredential encrypts username and password
+    [PSCredential] PSCredential() {
+        $SecureString = ConvertTo-SecureString $this.Password -AsPlainText -Force
+        return [PSCredential]::new($this.Username, $SecureString)
+    }
+
+    # SqlCredential encrypts username and password
+    [System.Data.SqlClient.SqlCredential] SqlCredential() {
+        $SecureString = ConvertTo-SecureString $this.Password -AsPlainText -Force
+        $SecureString.MakeReadOnly()
+        return [System.Data.SqlClient.SqlCredential]::New($this.Username, $SecureString)
+    }
+
+    # SqlConnection returns a ready to use SqlConnection
+    [System.Data.SqlClient.SqlConnection] SqlConnection() {
+        $ConnectionString = $this.ConnectionStringSecure()
+        $Connection = [System.Data.SqlClient.SqlConnection]::New($ConnectionString)
+        if (!$this.WindowsAuthentication) {
+            $Connection.Credential = $this.SqlCredential()
+        }
+        return $Connection
+    }
+    [string] ToString(){
+        return $this.ConnectionString()
     }
 }
 
+<#
+
+#>
+class DatabaseConnection {
+    [string]$ServerName
+    [string]$DatabaseName
+    
+    [SqlServerAuthentication]$Authentication
+    [System.IO.DirectoryInfo]$Log
+    [bool]$Debug
+    
+    <#
+        the standard query mechanism for all child objects
+    #>
+    [System.Data.Datarow[]] Query([System.Data.SqlClient.SqlCommand]$Command) {
+        $Command.Connection = $this.Authentication.SqlConnection()
+        return Invoke-Sql $Command
+    }
+
+    <#
+        From() method creates table connections and is synomymous with the SQL FROM keyword.
+    #>
+    [TableConnection] Table($SchemaName, $TableName) {
+        return [TableConnection]::new($this, $SchemaName, $TableName)
+    }
+}
 <#
     TableConnection class reprsents a table in a sql server database.
     it manages the creation and deltetion of rows in the table. it
@@ -358,12 +642,26 @@ class TableConnection {
     [hashtable[]]$Columns
     [string[]]$PrimaryKeys
 
+    [RowCacheUseLevels]$CacheMode = 1
+    [int]$CacheTTL = 180
 
-
-    [string] ObjectName(){
-        return "[$this.DB.DatabaseName].[$this.SchemaName].[$this.TableName]"
+    TableConnection([DatabaseConnection]$DB, [string]$schema, [string]$table) {
+    }
+    TableConnection([DatabaseConnection]$DB, [string]$schema, [string]$table, [string[]]$PrimaryKeys) {
     }
 
+    [string] ObjectName() {
+        return "[$($this.DB.DatabaseName)].[$($this.SchemaName)].[$($this.TableName)]"
+    }
+
+    hidden [bool] TestPrimaryKey([System.Data.DataColumn]$Column) {
+        if ($Column.IsKey) {
+            return $true
+        }
+        else {
+            return $false
+        }
+    }
 
     <#
         Where() Methods creates RowConnections.
@@ -477,6 +775,12 @@ class TableConnection {
     Delete() {}
 }
 
+enum RowCacheUseLevels {
+    Never = 1
+    Time = 2
+    Always = 3
+}
+
 <#
     RowConnection class is a lightweight reference to a row in a 
     table. It's main purpose it to provide an easy to use interface 
@@ -489,9 +793,17 @@ class TableConnection {
 class RowConnection {
     [TableConnection]$Table
     [hashtable]$PrimaryKeys
+    [hashtable]$Cache
+    hidden [hashtable]$CacheTimes
 
-    hidden [bool]$ProvenToBeUnique
-    hidden [bool]$ContainsTablePrimaryKeys
+    [RowCacheUseLevels]$CacheMode = 1
+    [int]$CacheTTL = 180
+
+    hidden [psobject]$UnsafeCache
+    hidden [bool]$Unique
+    hidden [bool]$Connected
+    hidden [nullable[datetime]]$Deleted
+    hidden [bool]$AutoCreate = $true
 
     RowConnection ($Table, [System.Data.Datarow]$PrimaryKeys) {
         $this.Table = $Table
@@ -503,9 +815,91 @@ class RowConnection {
         $this.PrimaryKeys = ConvertTo-Hashtable $PrimaryKeys -Include $this.Table.PrimaryKeys
         $this.ValidatePrimaryKeys()
     }
+    <#
+        [Decription]
+        Bread and Butter of this module. Runtime generated Getters and Setters for each columns.
+    #>
+    hidden BuildColumnProperties() {
+        foreach ($Column in $this.table.Columns) {
+            if ( $this.table.IsPrimaryKey($Column) ) {
+                [string]$Getter = "{return `$this.PrimaryKeys['$Column']}"
+                [string]$Setter = "{
+                    Param(
+                        [parameter(mandatory)]
+                        [psobject]
+                        `$Value
+                    ) 
+                    `$this.Update('$Column', `$Value)
+                    `$this.PrimaryKeys['$Column'] = `$Value
+                }"
+            }
+            else {
+                [string]$Getter = "{
+                    if(`$this.CacheMode -eq 'Never'){
+                        return `$this.Select('$Column')
+                    }
+                    elseif(`$this.CacheMode -eq 'Always'){
+                        `$Value = `$this.Cache['$Column']
+                        if(`$Value){
+                            return `$Value
+                        }
+                        else{
+                            `$this.Cache['$Column'] = `$this.Select('$Column')
+                            return `$this.Cache['$Column']
+                        }
+                    }
+                    elseif(`$this.CacheMode -eq 'Time'){
+                        `$Value = `$this.Cache['$Column']
+                        `$Time = `$this.CacheTimes['$Column']
+                        if(`$Value -and `$Time -and `$time.AddSeconds(`$this.TTL) -lt `$(Get-date) ){
+                            return `$Value
+                        }
+                        else{
+                            `$this.Cache['$Column'] = `$this.Select('$Column')
+                            `$this.CacheTimes['$Column'] = Get-date
+                            return `$this.Cache['$Column']
+                        }
+                    }
+                }"
+    
+                
+                [string]$Setter = "{
+                    Param(
+                        [parameter(mandatory)]
+                        [psobject]
+                        `$Value
+                    )
+                    try{
+                       `$this.Update('$Column', `$Value)
+                       `$this.Cache['$Column'] = `$Value
+                       `$this.CacheTimes['$Column'] = Get-Date
+                    }
+                    catch{
+                        throw `$psitem
+                    }
+                }"
+            }
+
+            $NewMethod = @{
+                memberType  = 'ScriptProperty'
+                InputObject = $this
+                Name        = $Column
+                Value       = Invoke-Expression $Getter
+                SecondValue = Invoke-Expression $Setter
+            }
+            Add-Member @NewMethod
+        }
+    }
+
+    <#
+        used for house keeping purposes
+    #>
+    hidden UpdateUnsafeCache () {
+        $this.UnsafeCache = $this.UnsafeSelect($this.Table.PrimaryKeys)
+    }   
 
     # Checks the rows PrimaryKeys hashtable against the tables PrimaryKey array.
-    hidden ValidatePrimaryKeys() {
+    hidden [bool] TestPrimaryKeys() {
         $Diffs = @{
             Source    = $this.Table.PrimaryKeys
             Reference = $this.PrimaryKeys.Keys 
@@ -516,41 +910,74 @@ class RowConnection {
             # [array]$differences = @('a','b','c')
             throw "Could Not Create RowConnection due to missing PrimaryKey: '$($differences -join "', '")'"
         }
-        $this.ContainsTablePrimaryKeys = $true
+        return $true
     }
-    # performs a select statement on the table to ensure only one row is returned.
-    hidden ValidateIdentity(){
-        $results = $this.UnsafeSelect($this.Table.PrimaryKeys)
-        if($results -is [System.Data.Datarow[]]){
-            [string]$InvalidPks = $this.PrimaryKeys | ft -AutoSize | out-string
-            # [string]$InvalidPks = @{a=1;b=2} | ft -AutoSize | out-string  
-            Throw "PrimaryKeys are not Unique in $($this.ObjectName()): $InvalidPks"
+    # simples confirms a row contains the rowconnections PrimaryKeys
+    hidden [bool] TestConnection() {
+        if (!$this.UnsafeCache) {
+            $this.Connected = $false
+            #Throw "PrimaryKeys are not Unique in $TB: $PKs"
         }
-        $this.ProvenToBeUnique = $true
+        # test existance
+        elseif ($this.UnsafeCache) {
+            $this.Connected = $true
+        }
+        return $this.Connected
+    }
+    hidden ConnectionError() {
+        throw "Could not establish a RowConnection with PrimaryKeys: $(ConvertTo-DataString $this.PrimaryKeys)"
     }
 
+    # Test that the RowConnections PrimaryKeys only Reference a single row
+    hidden [bool] TestUnique() {
+        if ($this.UnsafeCache -is [System.Data.Datarow]) {
+            $this.Unique = $True
+        }
+        else {
+            $this.Unique = $False
+        }
+        return $this.Unique
+    }
+    hidden UniqueError() {
+        throw "The RowConnection's PrimaryKeys: $(ConvertTo-DataString $this.PrimaryKeys) do not uniquely identify a row in the table: $($this.Table.ObjectName())"
+    }
     <#
-        Performs standard tests to ensure the Rowconnection is working as intended
+        [Description]
+        test() method forces standard tests. which is slow, but essencial.
     #>
     [void] Test() {
-        $this.ValidatePrimaryKeys()
-        $this.ValidateIdentity()
+        $this.UpdateUnsafeCache()
+        if (!$this.TestConnection()) {
+            $this.ConnectionError()
+        }
+        if (!$this.TestUnique()) {
+            $this.UniqueError()
+        }
     }
     <# 
-        Check() is like test, but is designed to efficient in loops by not rerunning 
-        the same passing tests again. all Write operations should perform this test.
+        [Description]
+        Check() method is like the Test() method, but it only performs tests 
+        that have previously failed or are untested.
     #>
     [void] Check() {
-        if(!$this.ProvenToBeUnique){
-            $this.ValidateIdentity()
+        if (!$this.UnsafeCache) {
+            $this.UpdateUnsafeCache()
         }
-        if(!$this.ContainsTablePrimaryKeys){
-            $this.ValidatePrimaryKeys()
+        if (!$this.Connected) {
+            if (!$this.TestConnection()) {
+                $this.ConnectionError()
+            }
+        }
+        if (!$this.Unique) {
+            if (!$this.TestUnique()) {
+                $this.UniqueError()
+            }
         }
     }
 
 
     <#
+        [Description]
         UnsafeSelect() method returns raw Datarows.
         It provides no identity guarantees on the values returned.
     #>
@@ -568,10 +995,10 @@ class RowConnection {
     }
 
     <#
+        [Description]
         Select() Methods gets the rows column values and returns 
         them as a hastable.
         
-        [Description]
         - The overload methods provide different ways to 
         specifying columns to return.
     #>
@@ -592,7 +1019,29 @@ class RowConnection {
     }
 
 
-    Update() {}
+    Update([hashtable]$Row) {}
+    Update([string]$Column, [psobject]$Value) {}
+
+    <#
+        Delete() method deletes the row from the table that it is referencing.
+        
+    #>
+    Delete() {
+        $this.Check()
+    }
+
+    <#
+        Insert() method ReInserts Primarykeys into the table.
+        This usefull if you call use the delete() method and then 
+        decide to use the row afterwards
+
+        Insert() should be safe to call at anytime
+
+
+    #>
+    Insert() {
+        $this.Check()
+    }
 }
 
 

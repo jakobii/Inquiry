@@ -7,15 +7,18 @@ function Write-Console {
         [alias('b')]
         [System.ConsoleColor]$BackgroundColor = $($Host.UI.RawUI.BackgroundColor)
     )
-    # backup
+    # backup colors
     $OrigForegroundColor = $Host.UI.RawUI.ForegroundColor
     $OrigBackgroundColor = $Host.UI.RawUI.BackgroundColor
 
-    #set
+    # set colors
     $Host.UI.RawUI.ForegroundColor = $ForegroundColor
     $Host.UI.RawUI.BackgroundColor = $BackgroundColor
     
+    # write object to console
     $InputObject | Out-Host
+
+    # revert to backup colors
     $Host.UI.RawUI.ForegroundColor = $OrigForegroundColor
     $Host.UI.RawUI.BackgroundColor = $OrigBackgroundColor
 }
