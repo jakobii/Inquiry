@@ -678,7 +678,7 @@ class TableConnection {
             Database = $this.GetDatabaseName()
             Schema   = $this.SchemaName
             Table    = $this.TableName
-            Columns  = $this.PrimaryKeys
+            Columns  = '*'
         }
         $Results = $this.DB.Query($Command)
 
@@ -687,6 +687,31 @@ class TableConnection {
         $Rows = Where-Object @{
             InputObject  = $Results
             FilterScript = $Filter
+        }
+
+        if (!$Rows) { return $null }
+        
+        [array]$RowConnections = 0..$Rows.Count
+        foreach ($Row in $Rows) {
+            $RowConnections += [RowConnection]::new($this, $Row)
+        }
+        return $RowConnections
+    }
+    [RowConnection[]] Where([scriptblock]$Filter,[string[]]$Columns) {
+        $SqlCmd = @{
+            Database = $this.GetDatabaseName()
+            Schema   = $this.SchemaName
+            Table    = $this.TableName
+            Columns  = Join-Array -Source1 $this.PrimaryKeys -Source2 $Columns
+        }
+        $Command = New-SqlCmd @SqlCmd
+        $Results = $this.DB.Query($Command)
+
+        if (!$Results) { return $null }
+
+        $Rows = Where-Object @{
+            InputObject  = $Results
+            FilterScrSqlCmdipt = $Filter
         }
 
         if (!$Rows) { return $null }
@@ -792,7 +817,6 @@ enum RowCacheUseLevels {
 #>
 class RowConnection {
     [TableConnection]$Table
-    [hashtable]$PrimaryKeys
     [hashtable]$Cache
     hidden [hashtable]$CacheTimes
 
@@ -805,15 +829,25 @@ class RowConnection {
     hidden [nullable[datetime]]$Deleted
     hidden [bool]$AutoCreate = $true
 
-    RowConnection ($Table, [System.Data.Datarow]$PrimaryKeys) {
+    RowConnection ($Table, [System.Data.Datarow]$Cache) {
         $this.Table = $Table
-        $this.PrimaryKeys = ConvertTo-Hashtable $PrimaryKeys -Include $this.Table.PrimaryKeys
-        $this.ValidatePrimaryKeys()
+        $this.Cache = ConvertTo-Hashtable $Cache
+        $this.TestPrimaryKeys()
     }
-    RowConnection ($Table, [Hashtable]$PrimaryKeys) {
+    RowConnection ($Table, [Hashtable]$Cache) {
         $this.Table = $Table
-        $this.PrimaryKeys = ConvertTo-Hashtable $PrimaryKeys -Include $this.Table.PrimaryKeys
-        $this.ValidatePrimaryKeys()
+        $this.Cache = $Cache
+        $this.TestPrimaryKeys()
+    }
+
+    [hashtable] PrimaryKeys(){
+        return ConvertTo-Hashtable $this.cache -Include $this.Table.PrimaryKeys
+    }
+    [bool] IsPrimaryKey([psobject]$Column){
+        if($this.Table.PrimaryKeys -contains $Column){
+            return $true
+        }
+        return $false
     }
     <#
         [Decription]
@@ -822,7 +856,9 @@ class RowConnection {
     hidden BuildColumnProperties() {
         foreach ($Column in $this.table.Columns) {
             if ( $this.table.IsPrimaryKey($Column) ) {
-                [string]$Getter = "{return `$this.PrimaryKeys['$Column']}"
+                [string]$Getter = "{
+                    return `$this.PrimaryKeys['$Column']
+                }"
                 [string]$Setter = "{
                     Param(
                         [parameter(mandatory)]
@@ -896,7 +932,7 @@ class RowConnection {
     #>
     hidden UpdateUnsafeCache () {
         $this.UnsafeCache = $this.UnsafeSelect($this.Table.PrimaryKeys)
-    }   
+    }
 
     # Checks the rows PrimaryKeys hashtable against the tables PrimaryKey array.
     hidden [bool] TestPrimaryKeys() {
