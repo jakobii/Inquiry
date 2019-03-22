@@ -1,3 +1,28 @@
+function Write-Console {
+    param(
+        [parameter(ValueFromPipeline)]
+        [psobject]$InputObject,
+        [alias('f')]
+        [System.ConsoleColor]$ForegroundColor = $($Host.UI.RawUI.ForegroundColor),
+        [alias('b')]
+        [System.ConsoleColor]$BackgroundColor = $($Host.UI.RawUI.BackgroundColor)
+    )
+    # backup colors
+    $OrigForegroundColor = $Host.UI.RawUI.ForegroundColor
+    $OrigBackgroundColor = $Host.UI.RawUI.BackgroundColor
+
+    # set colors
+    $Host.UI.RawUI.ForegroundColor = $ForegroundColor
+    $Host.UI.RawUI.BackgroundColor = $BackgroundColor
+    
+    # write object to console
+    $InputObject | Out-Host
+
+    # revert to backup colors
+    $Host.UI.RawUI.ForegroundColor = $OrigForegroundColor
+    $Host.UI.RawUI.BackgroundColor = $OrigBackgroundColor
+}
+
 <#
     return the Longest object passed to it.
 #>
@@ -456,12 +481,13 @@ function New-SqlComment {
 #>
 function Invoke-Sql {
     param (
-        [System.Data.SqlClient.SqlCommand]$Command
+        [System.Data.SqlClient.SqlCommand]$Command,
+        [System.Data.SqlClient.SqlConnection]$Connection
     )
-    $Adapter = [System.Data.SqlClient.SqlDataAdapter]::new($Command.CommandText,$Command.Connection)
+    $Adapter = [System.Data.SqlClient.SqlDataAdapter]::new($Command.CommandText, $Connection)
     $Table = [System.Data.DataTable]::new()
-    $Adapter.Fill($Table)
-    return $Table.Rows 
+    $Adapter.Fill($Table) | Out-Null
+    return $Table
 }
 
 <#
@@ -470,7 +496,7 @@ function Invoke-Sql {
     [example]
     $Auth = [SqlServerAuthentication]::new('mhu-dbwh-02','Enrollment')
     $table = Get-SchemaTable -Schema 'dbo' -Table 'JotFormTransferRequests' -Connection $Auth.SqlConnection()
-    $table.Rows[0] | Out-Host    
+    $table | Out-Host    
 #>
 function Get-SchemaTable {
     param(
@@ -599,13 +625,19 @@ Class SqlServerAuthentication {
         }
         return $Connection
     }
-    [string] ToString(){
+    [string] ToString() {
         return $this.ConnectionString()
     }
 }
 
 <#
+    # Description
+    DatabaseConnection class manages a connection with a database. 
+    all child objects use this class to make database sql calls.
 
+    # Example 1
+    $db = [DatabaseConnection]::New('localhost','Employees')
+    $db
 #>
 class DatabaseConnection {
     [string]$ServerName
@@ -615,52 +647,136 @@ class DatabaseConnection {
     [System.IO.DirectoryInfo]$Log
     [bool]$Debug
     
+    DatabaseConnection ([string]$Server, [string]$Database) {
+        $this.Authentication = [SqlServerAuthentication]::new($Server, $Database)
+        $this.ServerName = $Server
+        $this.DatabaseName = $Database
+    }
+
+    DatabaseConnection ([string]$Server, [string]$Database, [string]$Username, [string]$Password) {
+        $this.Authentication = [SqlServerAuthentication]::new($Server, $Database, $Username, $Password)
+        $this.ServerName = $Server
+        $this.DatabaseName = $Database
+    }
+
     <#
         the standard query mechanism for all child objects
     #>
     [System.Data.Datarow[]] Query([System.Data.SqlClient.SqlCommand]$Command) {
-        $Command.Connection = $this.Authentication.SqlConnection()
-        return Invoke-Sql $Command
+        if($this.Debug){
+            write-console $Command.CommandText -f Yellow
+        }
+        $Params = @{
+            Command    = $Command
+            Connection = $this.Authentication.SqlConnection()
+        }
+        return Invoke-Sql @Params
+    }
+    [System.Data.Datarow] QueryOne([System.Data.SqlClient.SqlCommand]$Command) {
+        if($this.Debug){
+            write-console $Command.CommandText -f Yellow
+        }
+        $Params = @{
+            Command    = $Command
+            Connection = $this.Authentication.SqlConnection()
+        }
+        return Invoke-Sql @Params
     }
 
     <#
         From() method creates table connections and is synomymous with the SQL FROM keyword.
     #>
-    [TableConnection] Table($SchemaName, $TableName) {
+    [TableConnection] Table([string]$SchemaName, [string]$TableName) {
         return [TableConnection]::new($this, $SchemaName, $TableName)
     }
+
+    [TableConnection] Table([string]$SchemaName, [string]$TableName,[string[]]$PrimaryKeys) {
+        return [TableConnection]::new($this, $SchemaName, $TableName,$PrimaryKeys)
+    }
 }
+
+# New-DatabaseConnection -Server -Database
+
+
 <#
     TableConnection class reprsents a table in a sql server database.
     it manages the creation and deltetion of rows in the table. it
     also can create RowConnection object that are used for updating row values.
+
+    # Example
+    $db = [DatabaseConnection]::New('localhost','MHUSD')
+    $db.Debug = $true
+    $tb = $db.Table('dbo','Employees')
+    $row = $tb.Where(@{EmployeeID = 842975})
+    $row
 #>
 class TableConnection {
-    [DatabaseConnection]$DB
+    [DatabaseConnection]$Database
     [string]$SchemaName
     [string]$TableName
     [hashtable[]]$Columns
     [string[]]$PrimaryKeys
 
-    [RowCacheUseLevels]$CacheMode = 1
-    [int]$CacheTTL = 180
+    hidden [bool]$ValidPrimaryKeys
 
     TableConnection([DatabaseConnection]$DB, [string]$schema, [string]$table) {
+        $this.Database = $DB
+        $this.SchemaName = $schema
+        $this.TableName = $table
+        $this.GetColumns()
+        $this.PrimaryKeys = $this.ParseColumnsForPrimaryKeys()
+        if (!$this.PrimaryKeys) {
+            $this.AutoPrimaryKeyError()
+        }
+        else{
+            $this.ValidPrimaryKeys = $true
+        }
     }
     TableConnection([DatabaseConnection]$DB, [string]$schema, [string]$table, [string[]]$PrimaryKeys) {
+        $this.Database = $DB
+        $this.SchemaName = $schema
+        $this.TableName = $table
+        $this.GetColumns()
+        $this.PrimaryKeys = $PrimaryKeys
     }
-
     [string] ObjectName() {
-        return "[$($this.DB.DatabaseName)].[$($this.SchemaName)].[$($this.TableName)]"
+        return "[$($this.Database.DatabaseName)].[$($this.SchemaName)].[$($this.TableName)]"
     }
+    hidden AutoPrimaryKeyError () {
+        throw "The TableConnection PrimaryKey property could not be automatically set.$($this.ObjectName()) does not have a PrimaryKeys or a Unique constraints."
+    }
+    hidden GetColumns() {
+        $params = @{
+            Connection = $this.Database.Authentication.SqlConnection()
+            Schema     = $this.SchemaName
+            Table      = $this.TableName
+        }
+        $SchemaTable = Get-SchemaTable @params
+        $this.Columns = @()
+        foreach ($row in $SchemaTable) {
+            $this.Columns += ConvertTo-Hashtable $row
+        }
+    }
+    hidden [string[]] ParseColumnsForPrimaryKeys() {
+        [System.Collections.ArrayList]$PKs = @()
+        
+        # first hunt for IsKey
+        foreach ($Column in $this.Columns) {
+            if ($Column.IsKey) {
+                $PKs.Add($Column.ColumnName)
+            }
+        }
 
-    hidden [bool] TestPrimaryKey([System.Data.DataColumn]$Column) {
-        if ($Column.IsKey) {
-            return $true
+        # then check for Uniques 
+        if (!$PKs) {
+            foreach ($Column in $this.Columns) {
+                if ($Column.Unique) {
+                    $PKs.Add($Column.ColumnName)
+                }
+            }
         }
-        else {
-            return $false
-        }
+
+        return $PKs
     }
 
     <#
@@ -672,15 +788,16 @@ class TableConnection {
         - A little duplication is better then a little dependancy
         - Each overload is responsible for generating its own sql,
         filtering the datarows, and return RowConnections.
+        
     #>
     [RowConnection[]] Where([scriptblock]$Filter) {
         $Command = New-SqlCmd @{
-            Database = $this.GetDatabaseName()
+            Database = $this.Database.DatabaseName
             Schema   = $this.SchemaName
             Table    = $this.TableName
             Columns  = '*'
         }
-        $Results = $this.DB.Query($Command)
+        $Results = $this.Database.Query($Command)
 
         if (!$Results) { return $null }
 
@@ -697,20 +814,20 @@ class TableConnection {
         }
         return $RowConnections
     }
-    [RowConnection[]] Where([scriptblock]$Filter,[string[]]$Columns) {
+    [RowConnection[]] Where([scriptblock]$Filter, [string[]]$Columns) {
         $SqlCmd = @{
-            Database = $this.GetDatabaseName()
+            Database = $this.Database.DatabaseName
             Schema   = $this.SchemaName
             Table    = $this.TableName
             Columns  = Join-Array -Source1 $this.PrimaryKeys -Source2 $Columns
         }
         $Command = New-SqlCmd @SqlCmd
-        $Results = $this.DB.Query($Command)
+        $Results = $this.Database.Query($Command)
 
         if (!$Results) { return $null }
 
         $Rows = Where-Object @{
-            InputObject  = $Results
+            InputObject        = $Results
             FilterScrSqlCmdipt = $Filter
         }
 
@@ -723,13 +840,16 @@ class TableConnection {
         return $RowConnections
     }
     [RowConnection[]] Where() {
-        $Command = New-SqlCmd @{
-            Database = $this.GetDatabaseName()
+        $Params = @{
+            Database = $this.Database.DatabaseName
             Schema   = $this.SchemaName
             Table    = $this.TableName
             Columns  = $this.PrimaryKeys
         }
-        $Results = $this.DB.Query($Command)
+
+        $Command = New-SqlCmd @Params
+
+        $Results = $this.Database.Query($Command)
 
         if (!$Results) { return $null }
         
@@ -740,21 +860,22 @@ class TableConnection {
         return $RowConnections
     }
     [RowConnection[]] Where([Hashtable]$Values) {
-        $Command = New-SqlCmd @{
-            Database    = $this.GetDatabaseName()
+        $Params = @{
+            Database    = $this.Database.DatabaseName
             Schema      = $this.SchemaName
             Table       = $this.TableName
             Columns     = $this.PrimaryKeys
-            Condidtions = $Values
+            Conditions  = $Values
         }
+        $Command = New-SqlCmd @Params
 
-        $Results = $this.DB.Query($Command)
+        $Results = $this.Database.Query($Command)
 
         if (!$Results) { return $null }
         
-        [array]$RowConnections = 0..$Results.Count
+        [array]$RowConnections = @()
         foreach ($Row in $Results) {
-            $RowConnections += [RowConnection]::new($this, $Row)
+            [array]$RowConnections += [RowConnection]::new($this, $Row)
         }
         return $RowConnections
     }
@@ -771,13 +892,13 @@ class TableConnection {
     }
     [RowConnection[]] Where([System.Data.SqlClient.SqlCommand]$Command) {
 
-        $Results = $this.DB.Query($Command)
+        $Results = $this.Database.Query($Command)
 
         if (!$Results) { return $null }
         
-        [array]$RowConnections = 0..$Results.Count
+        [array]$RowConnections = @()
         foreach ($Row in $Results) {
-            $RowConnections += [RowConnection]::new($this, $Row)
+            [array]$RowConnections += [RowConnection]::new($this, $Row)
         }
         return $RowConnections
     }
@@ -800,27 +921,38 @@ class TableConnection {
     Delete() {}
 }
 
-enum RowCacheUseLevels {
+# New-TableConnection -DatabaseConnection -Schema -Table -PrimaryKeys
+# New-TableConnection -Server -Database -Username -Password -Schema -Table -PrimaryKeys
+
+
+enum CacheModes {
     Never = 1
     Time = 2
     Always = 3
 }
 
 <#
+    # Description
     RowConnection class is a lightweight reference to a row in a 
     table. It's main purpose it to provide an easy to use interface 
     for updaing row values.
-
-    [Description]
     - It uses the rows unique constraints to reference the row.
     - unique constraints as stored in the PrimaryKeys Hashtable.
+    
+    # Example
+
+    $db = [DatabaseConnection]::New('localhost','MHUSD')
+    $db.Debug = $true
+    $tb = $db.Table('dbo','Employees')
+    $row = $tb.Where(@{EmployeeID = 842975})
+    $row.Firstname
 #>
 class RowConnection {
     [TableConnection]$Table
     [hashtable]$Cache
     hidden [hashtable]$CacheTimes
 
-    [RowCacheUseLevels]$CacheMode = 1
+    [CacheModes]$CacheMode = 1
     [int]$CacheTTL = 180
 
     hidden [psobject]$UnsafeCache
@@ -833,18 +965,20 @@ class RowConnection {
         $this.Table = $Table
         $this.Cache = ConvertTo-Hashtable $Cache
         $this.TestPrimaryKeys()
+        $this.BuildColumnProperties()
     }
     RowConnection ($Table, [Hashtable]$Cache) {
         $this.Table = $Table
         $this.Cache = $Cache
         $this.TestPrimaryKeys()
+        $this.BuildColumnProperties()
     }
 
-    [hashtable] PrimaryKeys(){
+    [hashtable] PrimaryKeys() {
         return ConvertTo-Hashtable $this.cache -Include $this.Table.PrimaryKeys
     }
-    [bool] IsPrimaryKey([psobject]$Column){
-        if($this.Table.PrimaryKeys -contains $Column){
+    [bool] IsPrimaryKey([psobject]$Column) {
+        if ($this.Table.PrimaryKeys -contains $Column) {
             return $true
         }
         return $false
@@ -854,67 +988,16 @@ class RowConnection {
         Bread and Butter of this module. Runtime generated Getters and Setters for each columns.
     #>
     hidden BuildColumnProperties() {
-        foreach ($Column in $this.table.Columns) {
-            if ( $this.table.IsPrimaryKey($Column) ) {
-                [string]$Getter = "{
-                    return `$this.PrimaryKeys['$Column']
-                }"
-                [string]$Setter = "{
-                    Param(
-                        [parameter(mandatory)]
-                        [psobject]
-                        `$Value
-                    ) 
-                    `$this.Update('$Column', `$Value)
-                    `$this.PrimaryKeys['$Column'] = `$Value
-                }"
-            }
-            else {
-                [string]$Getter = "{
-                    if(`$this.CacheMode -eq 'Never'){
-                        return `$this.Select('$Column')
-                    }
-                    elseif(`$this.CacheMode -eq 'Always'){
-                        `$Value = `$this.Cache['$Column']
-                        if(`$Value){
-                            return `$Value
-                        }
-                        else{
-                            `$this.Cache['$Column'] = `$this.Select('$Column')
-                            return `$this.Cache['$Column']
-                        }
-                    }
-                    elseif(`$this.CacheMode -eq 'Time'){
-                        `$Value = `$this.Cache['$Column']
-                        `$Time = `$this.CacheTimes['$Column']
-                        if(`$Value -and `$Time -and `$time.AddSeconds(`$this.TTL) -lt `$(Get-date) ){
-                            return `$Value
-                        }
-                        else{
-                            `$this.Cache['$Column'] = `$this.Select('$Column')
-                            `$this.CacheTimes['$Column'] = Get-date
-                            return `$this.Cache['$Column']
-                        }
-                    }
-                }"
-    
-                
-                [string]$Setter = "{
-                    Param(
-                        [parameter(mandatory)]
-                        [psobject]
-                        `$Value
-                    )
-                    try{
-                       `$this.Update('$Column', `$Value)
-                       `$this.Cache['$Column'] = `$Value
-                       `$this.CacheTimes['$Column'] = Get-Date
-                    }
-                    catch{
-                        throw `$psitem
-                    }
-                }"
-            }
+        foreach ($Column in $this.table.Columns.ColumnName) {
+            
+            [string]$Getter = "{return `$this.Select('$Column')}"
+
+            [string]$Setter = "{
+                param (
+                    [psobject]`$Value
+                )   
+                `$this.Update('$Column',`$Value)
+            }"
 
             $NewMethod = @{
                 memberType  = 'ScriptProperty'
@@ -938,7 +1021,7 @@ class RowConnection {
     hidden [bool] TestPrimaryKeys() {
         $Diffs = @{
             Source    = $this.Table.PrimaryKeys
-            Reference = $this.PrimaryKeys.Keys 
+            Reference = $this.PrimaryKeys().Keys
         }
         [bool]$Match = Assert-Array @Diffs
         if (!$Match) {
@@ -946,6 +1029,13 @@ class RowConnection {
             # [array]$differences = @('a','b','c')
             throw "Could Not Create RowConnection due to missing PrimaryKey: '$($differences -join "', '")'"
         }
+
+        # use the table to vouch for primary key validity 
+        if($this.Table.ValidPrimaryKeys){
+            $this.Unique = $true
+            $this.Connected = $true
+        }
+
         return $true
     }
     # simples confirms a row contains the rowconnections PrimaryKeys
@@ -961,12 +1051,12 @@ class RowConnection {
         return $this.Connected
     }
     hidden ConnectionError() {
-        throw "Could not establish a RowConnection with PrimaryKeys: $(ConvertTo-DataString $this.PrimaryKeys)"
+        throw "Could not establish a RowConnection with PrimaryKeys: $(ConvertTo-DataString $this.PrimaryKeys())"
     }
 
     # Test that the RowConnections PrimaryKeys only Reference a single row
     hidden [bool] TestUnique() {
-        if ($this.UnsafeCache -is [System.Data.Datarow]) {
+        if ($this.UnsafeCache -is [System.Data.Datarow[]] -and $this.UnsafeCache.Count -eq 1 ) {
             $this.Unique = $True
         }
         else {
@@ -975,7 +1065,7 @@ class RowConnection {
         return $this.Unique
     }
     hidden UniqueError() {
-        throw "The RowConnection's PrimaryKeys: $(ConvertTo-DataString $this.PrimaryKeys) do not uniquely identify a row in the table: $($this.Table.ObjectName())"
+        throw "The RowConnection's PrimaryKeys: $(ConvertTo-DataString $this.PrimaryKeys()) do not uniquely identify a row in the table: $($this.Table.ObjectName())"
     }
     <#
         [Description]
@@ -996,7 +1086,7 @@ class RowConnection {
         that have previously failed or are untested.
     #>
     [void] Check() {
-        if (!$this.UnsafeCache) {
+        if (!$this.UnsafeCache -and !$this.Connected -and !$this.Unique) {
             $this.UpdateUnsafeCache()
         }
         if (!$this.Connected) {
@@ -1019,16 +1109,21 @@ class RowConnection {
     #>
     hidden [psobject] UnsafeSelect([string[]]$Columns) {
         $params = @{
-            Database   = $this.Table.Db.DatabaseName
+            Database   = $this.Table.Database.DatabaseName
             Schema     = $this.Table.SchemaName
             Table      = $this.Table.Tablename
             Columns    = $Columns
-            Conditions = $this.PrimaryKeys
+            Conditions = $this.PrimaryKeys()
             Type       = [SqlCmdType]::SELECT 
         }
         $SqlCmd = New-SqlCmd @params
-        return  $this.Table.DB.Query($SqlCmd)
+
+        $Comment = New-SqlComment -Comment 'The table could not garrentee PrimaryKey safty this is a quick sanity check.'
+        $SqlCmd.CommandText = $Comment + $SqlCmd.CommandText 
+        return  $this.Table.Database.Query($SqlCmd)
     }
+
+
 
     <#
         [Description]
@@ -1040,20 +1135,36 @@ class RowConnection {
     #>
     [hashtable] Select([string[]]$Columns) {
         $this.Check()
-        $Results = $this.UnsafeSelect($Columns)
+        $params = @{
+            Database   = $this.Table.Database.DatabaseName
+            Schema     = $this.Table.SchemaName
+            Table      = $this.Table.Tablename
+            Columns    = $Columns
+            Conditions = $this.PrimaryKeys()
+            Type       = [SqlCmdType]::SELECT 
+        }
+        $SqlCmd = New-SqlCmd @params
+
+        $Results = $this.Table.Database.QueryOne($SqlCmd)
         return ConvertTo-Hashtable $Results
     }
     [hashtable] Select() {
-        $this.Check()
-        $Results = $this.UnsafeSelect("*")
-        return ConvertTo-Hashtable $Results 
+        return $this.Select(@('*'))
     }
-    [hashtable] Select([string]$Column) {
+    [psobject] Select([string]$Column) {
         $this.Check()
-        $Results = $this.UnsafeSelect($Column)
-        return $Results.Item[$Column] 
+        $params = @{
+            Database   = $this.Table.Database.DatabaseName
+            Schema     = $this.Table.SchemaName
+            Table      = $this.Table.Tablename
+            Columns    = $Column
+            Conditions = $this.PrimaryKeys()
+            Type       = [SqlCmdType]::SELECT 
+        }
+        $SqlCmd = New-SqlCmd @params
+        $Results = $this.Table.Database.QueryOne($SqlCmd)
+        return $Results[$Column]
     }
-
 
     Update([hashtable]$Row) {}
     Update([string]$Column, [psobject]$Value) {}
@@ -1080,4 +1191,23 @@ class RowConnection {
     }
 }
 
+<#
+Get-RowConnections -TableConnection -Cache [CacheMode] -Equals [hashtable[]]
+Get-RowConnections -TableConnection -Cache [CacheMode] -Filter [scriptblock]
+Get-RowConnections -TableConnection -Cache [CacheMode] -Query [System.Data.SqlClient.SqlCommand]
+#>
 
+<#
+Add-Rows -TableConnection -Rows [hashtable[]]
+Remove-Rows -TableConnection -Rows [hashtable[]]
+Remove-Rows -Rows [RowConnection[]]
+#>
+
+
+
+$db = [DatabaseConnection]::New('localhost','MHUSD')
+$db.Debug = $true
+$tb = $db.Table('dbo','Employees',@('EmployeeID'))
+$row = $tb.Where(@{EmployeeID = 842975})
+$row.Select('Firstname')
+$row.Birthdate
