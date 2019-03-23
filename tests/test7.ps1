@@ -200,7 +200,7 @@ function ConvertTo-DataString {
             }
             $OutputObject += "$Key = "
             # Type Switch
-            if ( $null -eq $Value -or $value -is [dbnull]) {
+            if ( $Value -eq $null -or $value -is [dbnull]) {
                 $OutputObject += "`$Null;"
             }
             elseif ( $Value -is [string] -or $Value -is [char]) {
@@ -1127,48 +1127,27 @@ enum CacheModes {
     $row.Firstname
 #>
 class RowConnection {
-    [TableConnection]$Table
-    [hashtable]$Cache
-    hidden [hashtable]$CacheTimes
-
-    hidden [psobject]$UnsafeCache
-    hidden [bool]$Unique
-    hidden [bool]$Connected
+    hidden [TableConnection]$Table
+    hidden [hashtable]$Cache
 
     RowConnection ($Table, [System.Data.Datarow]$Cache) {
         $this.Table = $Table
         $this.Cache = ConvertTo-Hashtable $Cache
-        $this.TestPrimaryKeys()
-        $this.AddColumnProperties($this.table.Columns.ColumnName)
+        $this.CreateColumnProperties($this.table.Columns.ColumnName)
     }
     RowConnection ($Table, [Hashtable]$Cache) {
         $this.Table = $Table
         $this.Cache = $Cache
-        $this.TestPrimaryKeys()
-        $this.AddColumnProperties($this.table.Columns.ColumnName)
+        $this.CreateColumnProperties($this.table.Columns.ColumnName)
     }
-
-    [hashtable] PrimaryKeys() {
-        return ConvertTo-Hashtable $this.cache -Include $this.Table.PrimaryKeys
-    }
-    [bool] IsPrimaryKey([psobject]$Column) {
-        if ($this.Table.PrimaryKeys -contains $Column) {
-            return $true
-        }
-        return $false
-    }
-    <#
-        [Decription]
-        Bread and Butter of this module. Runtime generated Getters and Setters for each columns.
-    #>
-    AddColumnProperties([string[]]$Columns) {
+    hidden CreateColumnProperties([string[]]$Columns) {
         foreach ($Column in $Columns) {
             $NewMethod = @{
                 memberType  = 'ScriptProperty'
                 InputObject = $this
                 Name        = $Column
-                Value       = Invoke-Expression "{return`$this.Select('$Column')}"
-                SecondValue = Invoke-Expression "{Param([parameter(mandatory)][psobject]`$Value) `$this.Update('$Column', `$Value) }"
+                Value       = Invoke-Expression "{return `$this.Select('$Column')}"
+                SecondValue = Invoke-Expression "{Param([parameter(mandatory)]`$Value);Write-Host `$Value -f Green }"
             }
             try{
                 Add-Member @NewMethod
@@ -1178,138 +1157,16 @@ class RowConnection {
             }
         }
     }
-
-    <#
-        used for house keeping purposes
-    #>
-    hidden UpdateUnsafeCache () {
-        $this.UnsafeCache = $this.UnsafeSelect($this.Table.PrimaryKeys)
-    }
-
-    # Checks the rows PrimaryKeys hashtable against the tables PrimaryKey array.
-    hidden [bool] TestPrimaryKeys() {
-        $Diffs = @{
-            Source    = $this.Table.PrimaryKeys
-            Reference = $this.PrimaryKeys().Keys
-        }
-        [bool]$Match = Assert-Array @Diffs
-        if (!$Match) {
-            [array]$differences = Compare-Array @Diffs
-            # [array]$differences = @('a','b','c')
-            throw "Could Not Create RowConnection due to missing PrimaryKey: '$($differences -join "', '")'"
-        }
-
-        # use the table to vouch for primary key validity 
-        if($this.Table.ValidPrimaryKeys){
-            $this.Unique = $true
-            $this.Connected = $true
-        }
-
-        return $true
-    }
-    # simples confirms a row contains the rowconnections PrimaryKeys
-    hidden [bool] TestConnection() {
-        if (!$this.UnsafeCache) {
-            $this.Connected = $false
-            #Throw "PrimaryKeys are not Unique in $TB: $PKs"
-        }
-        # test existance
-        elseif ($this.UnsafeCache) {
-            $this.Connected = $true
-        }
-        return $this.Connected
-    }
-    hidden ConnectionError() {
-        throw "Could not establish a RowConnection with PrimaryKeys: $(ConvertTo-DataString $this.PrimaryKeys())"
-    }
-
-    # Test that the RowConnections PrimaryKeys only Reference a single row
-    hidden [bool] TestUnique() {
-        if ($this.UnsafeCache -is [System.Data.Datarow[]] -and $this.UnsafeCache.Count -eq 1 ) {
-            $this.Unique = $True
-        }
-        else {
-            $this.Unique = $False
-        }
-        return $this.Unique
-    }
-    hidden UniqueError() {
-        throw "The RowConnection's PrimaryKeys: $(ConvertTo-DataString $this.PrimaryKeys()) do not uniquely identify a row in the table: $($this.Table.ObjectName())"
-    }
-    <#
-        [Description]
-        test() method forces standard tests. which is slow, but essencial.
-    #>
-    [void] Test() {
-        $this.UpdateUnsafeCache()
-        if (!$this.TestConnection()) {
-            $this.ConnectionError()
-        }
-        if (!$this.TestUnique()) {
-            $this.UniqueError()
-        }
-    }
-    <# 
-        [Description]
-        Check() method is like the Test() method, but it only performs tests 
-        that have previously failed or are untested.
-    #>
-    [void] Check() {
-        if (!$this.UnsafeCache -and !$this.Connected -and !$this.Unique) {
-            $this.UpdateUnsafeCache()
-        }
-        if (!$this.Connected) {
-            if (!$this.TestConnection()) {
-                $this.ConnectionError()
-            }
-        }
-        if (!$this.Unique) {
-            if (!$this.TestUnique()) {
-                $this.UniqueError()
-            }
-        }
-    }
-
-
-    <#
-        [Description]
-        UnsafeSelect() method returns raw Datarows.
-        It provides no identity guarantees on the values returned.
-    #>
-    hidden [psobject] UnsafeSelect([string[]]$Columns) {
-        $params = @{
-            Database   = $this.Table.Database.DatabaseName
-            Schema     = $this.Table.SchemaName
-            Table      = $this.Table.Tablename
-            Columns    = $Columns
-            Conditions = $this.PrimaryKeys()
-            Type       = [SqlCmdType]::SELECT 
-        }
-        $SqlCmd = New-SqlCmd @params
-
-        $Comment = New-SqlComment -Comment 'The table could not garrentee PrimaryKey safty this is a quick sanity check.'
-        $SqlCmd.CommandText = $Comment + $SqlCmd.CommandText 
-        return  $this.Table.Database.Query($SqlCmd)
-    }
-
     hidden UpdateChache($Values){
         foreach($key in $Values.Keys){
             $this.Cache.Remove($key)
             $this.Cache.Add($key,$Values[$key])
         }
     }
-
-
-    <#
-        [Description]
-        Select() Methods gets the rows column values and returns 
-        them as a hastable.
-        
-        - The overload methods provide different ways to 
-        specifying columns to return.
-    #>
+    [hashtable] PrimaryKeys() {
+        return ConvertTo-Hashtable $this.cache -Include $this.Table.PrimaryKeys
+    }
     [hashtable] Select([array]$Columns) {
-        $this.Check()
 
         [hashtable]$OuputObject = @{}
 
@@ -1335,8 +1192,9 @@ class RowConnection {
             Table      = $this.Table.Tablename
             Columns    = $ColumnsNotCached
             Conditions = $this.PrimaryKeys()
+            Type       = [SqlCmdType]::SELECT 
         }
-        $SqlCmd = New-SqlSelect @params
+        $SqlCmd = New-SqlCmd @params
 
         # query database for none cached values
         $Results = $this.Table.Database.QueryOne($SqlCmd) 
@@ -1358,7 +1216,6 @@ class RowConnection {
     }
     
     Update([hashtable]$Row) {
-        $this.Check()
         $Params = @{
             Database   = $this.Table.Database.DatabaseName
             Schema     = $this.Table.SchemaName
@@ -1379,32 +1236,14 @@ class RowConnection {
     Update([string]$Column, [psobject]$Value) {
         $this.Update(@{$Column=$Value})
     }
-
-    <#
-        Delete() method deletes the row from the table that it is referencing.
-        
-    #>
-    Delete() {
-        $this.Check()
-    }
-
-    <#
-        Insert() method ReInserts Primarykeys into the table.
-        This usefull if you call use the delete() method and then 
-        decide to use the row afterwards
-
-        Insert() should be safe to call at anytime
-
-
-    #>
-    Insert() {
-        $this.Check()
-    }
 }
 
 
-#$db = [DatabaseConnection]::New('localhost','MHUSD')
-#$db.Debug = $true
-#$tb = $db.Table('dbo','Employees')
-#$row = $tb.Where(@{EmployeeID = 842975})
-#$row.Select('Firstname')
+$db = [DatabaseConnection]::New('localhost','MHUSD')
+$db.Debug = $true
+$tb = $db.Table('dbo','Employees')
+$row = $tb.Where(@{EmployeeID = 842975})
+$row.select('birthdate')
+$row.FTE = 2
+
+$row.catch.FTE

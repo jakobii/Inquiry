@@ -200,7 +200,7 @@ function ConvertTo-DataString {
             }
             $OutputObject += "$Key = "
             # Type Switch
-            if ( $Value -eq $null -or $value -is [dbnull]) {
+            if ( $null -eq $Value -or $value -is [dbnull]) {
                 $OutputObject += "`$Null;"
             }
             elseif ( $Value -is [string] -or $Value -is [char]) {
@@ -404,6 +404,185 @@ Function New-SqlCmd {
     elseif ($type -eq [SqlCmdType]::INSERT) {}
     elseif ($type -eq [SqlCmdType]::DELETE) {}
 }
+
+function ConvertTo-SqlStringType {
+    param(
+        [psobject]$Value
+    )
+    [string]$OuputObject = 'NULL'
+    #type switch
+    if ($Value -is [int] -or $value -is [double]) {
+        [string]$OuputObject = $Value
+    }
+    elseif ($Value -is [bool]) {
+        if ($Value -eq $true) {
+            [string]$OuputObject = "1"
+        }
+        else {
+            [string]$OuputObject = "0"
+        }
+    }
+    elseif ($Value -is [scriptblock]) {
+        $result = $Value.InvokeReturnAsIs()
+        [string]$OuputObject = "$result"
+    }
+    else {
+        [string]$OuputObject = "'$Value'"
+    }
+    return $OuputObject
+}
+
+function New-SqlWhere {
+    param(
+        [parameter(Mandatory)]
+        [string]$Database,
+        
+        [string]$Schema = 'dbo',
+        
+        [parameter(Mandatory)]
+        [string]$Table,
+
+        [hashtable]$Conditions,
+        $Tab = '    '
+    )
+
+    # WHERE
+    [string]$SQL = "WHERE {{ EQ }}"
+    [array]$Keys = $Conditions.keys
+    $LongestKey = Get-Max $Keys
+    $TabCount = $LongestKey.Length
+    if ($Conditions.keys.Count -gt 1) {
+        $FirstTab = '    '
+    }
+    [string]$EQ = ''
+    [int]$i = 0
+    foreach ($Column in $Conditions.keys) {
+        $Value = $Conditions[$Column]
+
+        [string]$EQ += "`r`n$Tab"
+        if ($i++ -gt 0) {
+            [string]$EQ += 'AND '
+        }
+        $padding = " " * [math]::Abs( [math]::Ceiling( $TabCount - $Column.Length ))
+        [string]$EQ += "[$Database].[$Schema].[$Table].[$Column]$FirstTab$padding = "
+        [string]$FirstTab = ''
+
+        #type switch
+        if ($Value -is [int] -or $value -is [double]) {
+            [string]$EQ += $Value
+        }
+        elseif ($Value -is [bool]) {
+            if ($Value -eq $true) {
+                [string]$EQ += "1"
+            }
+            else {
+                [string]$EQ += "0"
+            }
+        }
+        elseif ($Value -is [scriptblock]) {
+            $result = $Value.InvokeReturnAsIs()
+            [string]$EQ += "$result"
+        }
+        else {
+            [string]$EQ += "'$Value'"
+        }
+    }
+    return $SQL -replace "{{ EQ }}", $EQ
+}
+
+<#
+    # Example
+    New-SqlSelect -Database 'mhusd' -Schema 'dbo' -Table 'Employees' -Conditions @{EmployeeID = 12345}
+#>
+Function New-SqlSelect {
+    param(
+        [parameter(Mandatory)]
+        [string]$Database,
+        
+        [string]$Schema = 'dbo',
+        
+        [parameter(Mandatory)]
+        [string]$Table,
+
+        [string[]]$Columns,
+        [hashtable]$Conditions,
+        $Tab = '    '
+    )
+
+    [string]$SQL = "SELECT {{ COLUMNS }}`r`nFROM [$Database].[$Schema].[$Table]"
+
+    # SELECT ALL
+    if ($null -eq $Columns -or $Columns[0] -eq '*') {
+        $SQL = $SQL -Replace '{{ COLUMNS }}', '*'
+    }
+    # SELECT SOME
+    else {
+        $SQL = $SQL -Replace '{{ COLUMNS }}', "`r`n$Tab[$($Columns -join "],`r`n$Tab[")]"
+    }
+    
+    # return early
+    if (!$Conditions) {
+        return $SQL
+    }
+    
+    # build where statement
+    $WhereParams = @{
+        Database = $Database
+        Schema = $Schema
+        Table = $Table
+        Conditions = $Conditions
+        Tab = $Tab
+    }
+    $WHERE = New-SqlWhere @WhereParams
+    return $SQL + "`r`n" + $WHERE
+}
+
+
+<#
+    # Example
+    New-SqlUpdate -Database 'mhusd' -Schema 'dbo' -Table 'Employees' -Conditions @{EmployeeID = 12345} -Set @{BargainingUnit = 22;Middlename = 'Regino'}
+
+#>
+function New-SqlUpdate {
+    param(
+        [parameter(Mandatory)]
+        [string]$Database,
+        
+        [string]$Schema = 'dbo',
+        
+        [parameter(Mandatory)]
+        [string]$Table,
+
+        [parameter(Mandatory)]
+        [hashtable]$Set,
+        [hashtable]$Conditions,
+        $Tab = '    '
+    )
+
+    $SQL = "UPDATE [$Database].[$Schema].[$Table]`r`nSET`r`n"
+    $ColumnCount = $Set.Keys.Count
+    foreach($Column in $Set.Keys){
+        $Value = $Set[$Column]
+        [string]$SqlStrValue = ConvertTo-SqlStringType $Value 
+        $SQL += "$Tab[$Database].[$Schema].[$Table].[$Column] = $SqlStrValue"
+        if($i++ -lt $ColumnCount -1){
+            $sql += ",`r`n"
+        }
+    }
+    $WhereParams = @{
+        Database = $Database
+        Schema = $Schema
+        Table = $Table
+        Conditions = $Conditions
+        Tab = $Tab
+    }
+    $WHERE = New-SqlWhere @WhereParams
+    return $SQL + "`r`n" + $WHERE
+}
+
+
+
+
 <#
     ConvertTo-SqlCmd wraps a sql statment in a statndard SqlConnection object
 #>
@@ -952,9 +1131,6 @@ class RowConnection {
     [hashtable]$Cache
     hidden [hashtable]$CacheTimes
 
-    [CacheModes]$CacheMode = 1
-    [int]$CacheTTL = 180
-
     hidden [psobject]$UnsafeCache
     hidden [bool]$Unique
     hidden [bool]$Connected
@@ -965,13 +1141,13 @@ class RowConnection {
         $this.Table = $Table
         $this.Cache = ConvertTo-Hashtable $Cache
         $this.TestPrimaryKeys()
-        $this.BuildColumnProperties()
+        $this.AddColumnProperties($this.table.Columns.ColumnName)
     }
     RowConnection ($Table, [Hashtable]$Cache) {
         $this.Table = $Table
         $this.Cache = $Cache
         $this.TestPrimaryKeys()
-        $this.BuildColumnProperties()
+        $this.AddColumnProperties($this.table.Columns.ColumnName)
     }
 
     [hashtable] PrimaryKeys() {
@@ -987,26 +1163,21 @@ class RowConnection {
         [Decription]
         Bread and Butter of this module. Runtime generated Getters and Setters for each columns.
     #>
-    hidden BuildColumnProperties() {
-        foreach ($Column in $this.table.Columns.ColumnName) {
-            
-            [string]$Getter = "{return `$this.Select('$Column')}"
-
-            [string]$Setter = "{
-                param (
-                    [psobject]`$Value
-                )   
-                `$this.Update('$Column',`$Value)
-            }"
-
+    AddColumnProperties([string[]]$Columns) {
+        foreach ($Column in $Columns) {
             $NewMethod = @{
                 memberType  = 'ScriptProperty'
                 InputObject = $this
                 Name        = $Column
-                Value       = Invoke-Expression $Getter
-                SecondValue = Invoke-Expression $Setter
+                Value       = Invoke-Expression "{return`$this.Select('$Column')}"
+                SecondValue = Invoke-Expression "{Param([parameter(mandatory)][psobject]`$Value) `$this.Update('$Column', `$Value) }"
             }
-            Add-Member @NewMethod
+            try{
+                Add-Member @NewMethod
+            }
+            catch{
+                throw $PSItem
+            }
         }
     }
 
@@ -1123,6 +1294,12 @@ class RowConnection {
         return  $this.Table.Database.Query($SqlCmd)
     }
 
+    hidden UpdateChache($Values){
+        foreach($key in $Values.Keys){
+            $this.Cache.Remove($key)
+            $this.Cache.Add($key,$Values[$key])
+        }
+    }
 
 
     <#
@@ -1133,41 +1310,78 @@ class RowConnection {
         - The overload methods provide different ways to 
         specifying columns to return.
     #>
-    [hashtable] Select([string[]]$Columns) {
+    [hashtable] Select([array]$Columns) {
         $this.Check()
+
+        [hashtable]$OuputObject = @{}
+
+        # check cache for values
+        [array]$ColumnsNotCached = @()
+        foreach($Column in $Columns){
+            if($this.Cache[$Column]){
+                [hashtable]$OuputObject += @{$Column=$this.Cache[$Column]}
+            }
+            else{
+                [array]$ColumnsNotCached += $Column
+            }
+        }
+
+        if(!$ColumnsNotCached){
+            return $OuputObject
+        }
+
+        # build select statement
         $params = @{
             Database   = $this.Table.Database.DatabaseName
             Schema     = $this.Table.SchemaName
             Table      = $this.Table.Tablename
-            Columns    = $Columns
+            Columns    = $ColumnsNotCached
             Conditions = $this.PrimaryKeys()
             Type       = [SqlCmdType]::SELECT 
         }
         $SqlCmd = New-SqlCmd @params
 
-        $Results = $this.Table.Database.QueryOne($SqlCmd)
-        return ConvertTo-Hashtable $Results
+        # query database for none cached values
+        $Results = $this.Table.Database.QueryOne($SqlCmd) 
+        $NewValues = ConvertTo-Hashtable $Results
+
+        # udpate chache
+        $this.UpdateChache($NewValues)
+
+        # merge cache with new values
+        $OuputObject += $NewValues 
+
+        return $OuputObject
     }
     [hashtable] Select() {
         return $this.Select(@('*'))
     }
     [psobject] Select([string]$Column) {
+        return $this.Select(@($Column))[$Column]
+    }
+    
+    Update([hashtable]$Row) {
         $this.Check()
-        $params = @{
+        $Params = @{
             Database   = $this.Table.Database.DatabaseName
             Schema     = $this.Table.SchemaName
-            Table      = $this.Table.Tablename
-            Columns    = $Column
+            Table      = $this.table.TableName
             Conditions = $this.PrimaryKeys()
-            Type       = [SqlCmdType]::SELECT 
+            Set        = $Row
         }
-        $SqlCmd = New-SqlCmd @params
-        $Results = $this.Table.Database.QueryOne($SqlCmd)
-        return $Results[$Column]
+        $Sql = New-SqlUpdate @Params
+
+        # udpate database
+        $this.table.Database.QueryOne($Sql) | Out-Null
+
+        # update cache
+        $this.UpdateChache($Row)
     }
 
-    Update([hashtable]$Row) {}
-    Update([string]$Column, [psobject]$Value) {}
+
+    Update([string]$Column, [psobject]$Value) {
+        $this.Update(@{$Column=$Value})
+    }
 
     <#
         Delete() method deletes the row from the table that it is referencing.
@@ -1191,23 +1405,9 @@ class RowConnection {
     }
 }
 
-<#
-Get-RowConnections -TableConnection -Cache [CacheMode] -Equals [hashtable[]]
-Get-RowConnections -TableConnection -Cache [CacheMode] -Filter [scriptblock]
-Get-RowConnections -TableConnection -Cache [CacheMode] -Query [System.Data.SqlClient.SqlCommand]
-#>
-
-<#
-Add-Rows -TableConnection -Rows [hashtable[]]
-Remove-Rows -TableConnection -Rows [hashtable[]]
-Remove-Rows -Rows [RowConnection[]]
-#>
-
-
 
 $db = [DatabaseConnection]::New('localhost','MHUSD')
 $db.Debug = $true
-$tb = $db.Table('dbo','Employees',@('EmployeeID'))
+$tb = $db.Table('dbo','Employees')
 $row = $tb.Where(@{EmployeeID = 842975})
-$row.Select('Firstname')
-$row.Birthdate
+$row.BargainingUnit = 33
